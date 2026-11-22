@@ -1,0 +1,29 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Local config and data
+.env
+# Personal Compose changes (read automatically by Compose, never shared)
+docker-compose.override.yml
+.env.*
+!.env.example
+data/
+data-*/
+*.db
+*.db-*
+
+# Editors / OS
+.idea/
+.vscode/*
+!.vscode/extensions.json
+.DS_Store
+*.log
+
+# Cloudflare Tunnel token (docs/tunnel.md)
+secrets/
+
+# UI reference screenshots (scripts/ui-snapshots.ts)
+.snapshots/
+ui-snapshots.zip

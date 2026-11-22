@@ -1,0 +1,214 @@
+/*
+ * The only place that maps theme variables (themes.css) to Tailwind names.
+ *
+ * - Tailwind's default palette, breakpoints and font sizes are switched off,
+ *   so components can only use our tokens (`bg-card`, `text-text-2`, ...).
+ * - shadcn/ui's variable names are mapped to our tokens here, so the
+ *   generated components in components/ui/ follow the theme unchanged.
+ */
+
+@theme {
+  --color-*: initial;
+  --breakpoint-*: initial;
+
+  /* Mobile first: `desk:` is the PC layout (> 860 px), `wide:` the two-column rows (> 1100 px). */
+  --breakpoint-desk: 861px;
+  --breakpoint-wide: 1101px;
+
+  --font-sans: 'Inter Variable', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+  /* Large numbers and titles. */
+  --font-display: 'Space Grotesk', 'Inter Variable', system-ui, sans-serif;
+
+  /* Type scale. Default text-xs/sm/base/xl/2xl are 12/14/16/20/24. */
+  --text-axis: 11px;
+  --text-axis--line-height: 1.4;
+  --text-table: 13px;
+  --text-table--line-height: 1.4;
+  --text-tile: 22px;
+  --text-tile--line-height: 1.2;
+  --text-stat: 28px;
+  --text-stat--line-height: 1.15;
+}
+
+@theme inline {
+  /* Our tokens. */
+  --color-page: var(--page);
+  --color-card: var(--card);
+  --color-raised: var(--raised);
+  --color-hover: var(--hover);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-text: var(--text);
+  --color-text-2: var(--text-2);
+  --color-text-3: var(--text-3);
+  --color-accent: var(--accent);
+  --color-accent-text: var(--accent-text);
+  --color-on-accent: var(--on-accent);
+  --color-on-down: var(--on-down);
+  --color-accent-wash: var(--accent-wash);
+  --color-active: var(--active);
+  --color-afk: var(--afk);
+  --color-acc-1: var(--acc-1);
+  --color-acc-2: var(--acc-2);
+  --color-acc-3: var(--acc-3);
+  --color-acc-4: var(--acc-4);
+  --color-acc-5: var(--acc-5);
+  --color-heat-0: var(--heat-0);
+  --color-heat-1: var(--heat-1);
+  --color-heat-2: var(--heat-2);
+  --color-heat-3: var(--heat-3);
+  --color-heat-4: var(--heat-4);
+  --color-heat-5: var(--heat-5);
+  --color-heat-6: var(--heat-6);
+  --color-up: var(--up);
+  --color-down: var(--down);
+  --color-live: var(--live);
+  --color-info: var(--info);
+  --color-info-text: var(--info-text);
+  --color-info-wash: var(--info-wash);
+  --color-grid: var(--grid);
+  --color-overlay: var(--overlay);
+  --shadow-menu: var(--shadow);
+
+  /* shadcn/ui names -> our tokens. */
+  --color-background: var(--page);
+  --color-foreground: var(--text);
+  --color-card-foreground: var(--text);
+  --color-popover: var(--card);
+  --color-popover-foreground: var(--text);
+  --color-primary: var(--accent);
+  --color-primary-foreground: var(--on-accent);
+  --color-secondary: var(--raised);
+  --color-secondary-foreground: var(--text);
+  --color-muted: var(--raised);
+  --color-muted-foreground: var(--text-2);
+  --color-destructive: var(--down);
+  --color-input: var(--border);
+  --color-ring: var(--accent);
+}
+
+@layer base {
+  *,
+  ::before,
+  ::after {
+    border-color: var(--border);
+    outline-color: var(--accent);
+  }
+
+  html,
+  body {
+    background: var(--page);
+    color: var(--text);
+    font-family: var(--font-sans);
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /*
+   * Body text is 14 px, but the root stays at the browser's 16 px: Tailwind's
+   * rem sizes (text-xs, spacing, size-6, rounded-xl) are defined against it,
+   * and a 14 px root shrank them all to 87.5 %.
+   */
+  body {
+    font-size: 14px;
+  }
+
+  a {
+    color: var(--accent-text);
+  }
+
+  /* Visible focus ring in the accent colour. */
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  table {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /*
+   * Scrollbars: every scroll area and the page itself, in the theme's own
+   * tokens, so a new theme needs nothing here. Thin, no arrow buttons,
+   * transparent track, thumb in --text-3 (above 3:1 against --page and --card)
+   * and in --text-2 on hover.
+   *
+   * Safari and Chromium take the ::-webkit-scrollbar rules, which can style
+   * the thumb under the pointer. Chromium ignores them once the standard
+   * properties are set, so those are only for browsers without the pseudo-
+   * elements (Firefox). There the thumb cannot be reached, so it gets --text-2
+   * while the pointer is over its scroll area (not for the page, where the
+   * pointer always is).
+   */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-button {
+    display: none;
+  }
+
+  ::-webkit-scrollbar-track,
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    border-radius: 4px;
+    background: var(--text-3);
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--text-2);
+  }
+
+  @supports not selector(::-webkit-scrollbar) {
+    * {
+      scrollbar-width: thin;
+      scrollbar-color: var(--text-3) transparent;
+    }
+
+    :hover:not(html, body) {
+      scrollbar-color: var(--text-2) transparent;
+    }
+  }
+}
+
+@keyframes live-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/*
+ * Safe areas. With `viewport-fit=cover` an installed app reaches under the
+ * notch, the status bar and the home indicator; these keep content clear of
+ * them. All are 0 on a desktop and in an ordinary browser tab, so the layout is
+ * unchanged there.
+ */
+:root {
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+}
+
+/* Side padding of 16 px, or more where a notch is (landscape). */
+@utility safe-x {
+  padding-left: max(1rem, var(--safe-left));
+  padding-right: max(1rem, var(--safe-right));
+}
+
+/* Keeps a whole page (login, invite, error pages) inside the safe area. */
+@utility safe-area {
+  padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left);
+}
+
+@utility animate-live-pulse {
+  animation: live-pulse 1.6s infinite;
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
+  }
+}

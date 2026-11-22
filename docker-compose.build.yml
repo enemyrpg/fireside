@@ -1,0 +1,18 @@
+# Builds the Fireside image from this checkout instead of pulling the release
+# from GHCR. Used by CI and by anyone who runs their own changes. See
+# docs/self-hosting.md "Building the image yourself".
+#
+# Add it in .env, so every `docker compose` command uses it:
+#
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml
+#
+# then `docker compose up -d --build`.
+#
+#   FIRESIDE_LOCAL_IMAGE  Tag for the built image. Default: fireside:local.
+#                         Give a second clone its own tag (e.g. fireside:test),
+#                         so building there doesn't replace your instance's
+#                         image.
+services:
+  fireside:
+    build: .
+    image: ${FIRESIDE_LOCAL_IMAGE:-fireside:local}

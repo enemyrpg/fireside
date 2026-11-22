@@ -1,0 +1,59 @@
+name: Pull request
+
+# Checks that only make sense on a pull request. Both are required checks
+# (scripts/github/apply-repo-settings.sh) and need no secrets, so they work
+# for pull requests from forks.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  # Pull requests are squash-merged, so the title becomes the commit message
+  # that release-please reads for the version and the changelog
+  # (CONTRIBUTING.md "Pull requests" and "Releases"). Inline, so no
+  # third-party action sees the token. The title comes in through env, never
+  # pasted into the script.
+  title:
+    name: PR title
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check that the title follows Conventional Commits
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          pattern='^(feat|fix|docs|chore|ci|build|test|refactor|perf|style|revert)(\([a-z0-9._/-]+\))?!?: [^ ]'
+          if [[ "$TITLE" =~ $pattern ]]; then
+            echo "PR title OK: $TITLE"
+          else
+            echo "::error::The PR title must follow Conventional Commits, e.g. 'feat: weekly goals' or 'fix(web): session end after a world hop'. Types: feat, fix, docs, chore, ci, build, test, refactor, perf, style, revert. Got: $TITLE"
+            exit 1
+          fi
+
+  # Secrets in the pull request's commits. See .gitleaks.toml for what is
+  # allowed (test fixtures).
+  gitleaks:
+    name: Gitleaks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # Lists the pull request's commits.
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      # No license is needed for a personal account's repositories.
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITLEAKS_ENABLE_COMMENTS: 'false'

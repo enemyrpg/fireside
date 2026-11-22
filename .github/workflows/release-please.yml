@@ -1,0 +1,46 @@
+name: Release
+
+# Opens and updates the release pull request on every push to main, and
+# creates the GitHub release and the v<version> tag when it is merged. See
+# docs/decisions/0016-release-setup.md and CONTRIBUTING.md "Releases".
+#
+# - One version for the whole repo (release-please-config.json), tags
+#   v<version>. Contract releases (contract-v*) are separate: see
+#   release-contract.yml. release-please never creates or changes them.
+# - Uses a GitHub App token, not GITHUB_TOKEN: pull requests and releases
+#   made with GITHUB_TOKEN start no workflows, so the release PR would get no
+#   CI and the release would not build the image (release-image.yml).
+# - Skipped where the App isn't set up (forks, a new repo before setup). Start
+#   it by hand after adding the variable and the secret:
+#   `gh workflow run release-please.yml`.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    name: Release PR
+    if: vars.RELEASE_APP_CLIENT_ID != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Create a GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json

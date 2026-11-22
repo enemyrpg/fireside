@@ -1,0 +1,128 @@
+/*
+ * Themes. One block per theme, plus one line in themes.ts. Components never use
+ * colours directly: they use these variables through the Tailwind names in
+ * tokens.css. A new theme needs no component change.
+ */
+
+[data-theme='ember'] {
+  color-scheme: dark;
+  --page: #14110f;
+  --card: #1d1916;
+  --raised: #26211d;
+  --hover: #2a2420;
+  --border: #2e2823;
+  --border-strong: #3a322b;
+  --text: #f2ece4;
+  --text-2: #c9bfb2;
+  --text-3: #a39889;
+  --accent: #f0803c;
+  --accent-text: #f59a5c;
+  --on-accent: #1a1009;
+  --accent-wash: #2a211b;
+  --active: #f0803c;
+  --afk: #7a7066;
+  --acc-1: #3fb884;
+  --acc-2: #7fa7c9;
+  --acc-3: #e3cf6a;
+  --acc-4: #e0789a;
+  --acc-5: #c58bd6;
+  --heat-0: #241f1b;
+  --heat-1: #3a281b;
+  --heat-2: #5a3520;
+  --heat-3: #8a4a24;
+  --heat-4: #b85f2b;
+  --heat-5: #e07a38;
+  --heat-6: #ffa05c;
+  --up: #6fcf97;
+  --down: #f08a8a;
+  --on-down: #1a1009;
+  --live: #4cc38a;
+  --info: #7fa7c9;
+  --info-text: #a9c8e4;
+  --info-wash: #1e242a;
+  --grid: #2a2420;
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  --overlay: rgba(0, 0, 0, 0.55);
+}
+
+[data-theme='dark'] {
+  color-scheme: dark;
+  --page: #181927;
+  --card: #1f2133;
+  --raised: #282a40;
+  --hover: #2c2f48;
+  --border: #2f3250;
+  --border-strong: #3e4266;
+  --text: #e6e7ee;
+  --text-2: #9ea2b8;
+  --text-3: #9397b1;
+  --accent: #6268e3;
+  --accent-text: #959bff;
+  --on-accent: #ffffff;
+  --accent-wash: rgba(98, 104, 227, 0.14);
+  --active: #7178f0;
+  --afk: #6b6f86;
+  --acc-1: #199e70;
+  --acc-2: #d95926;
+  --acc-3: #3987e5;
+  --acc-4: #d55181;
+  --acc-5: #c98500;
+  --heat-0: #262840;
+  --heat-1: #23264a;
+  --heat-2: #353a7e;
+  --heat-3: #4b51b8;
+  --heat-4: #7178f0;
+  --heat-5: #a3a8ff;
+  --heat-6: #d3d6ff;
+  --up: #3fbf6a;
+  --down: #f17070;
+  --on-down: #181927;
+  --live: #3fbf6a;
+  --info: #4fb3d9;
+  --info-text: #8fd0ec;
+  --info-wash: #1c2a3a;
+  --grid: #2a2d45;
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  --overlay: rgba(0, 0, 0, 0.45);
+}
+
+[data-theme='light'] {
+  color-scheme: light;
+  --page: #d8ccb4;
+  --card: #e2dbc8;
+  --raised: #d6cbb2;
+  --hover: #cfc3a8;
+  --border: #c2b394;
+  --border-strong: #a8977a;
+  --text: #1b1611;
+  --text-2: #4d4136;
+  --text-3: #594b3b;
+  --accent: #936039;
+  --accent-text: #704320;
+  --on-accent: #ffffff;
+  --accent-wash: rgba(147, 96, 57, 0.14);
+  --active: #9a5418;
+  --afk: #a69c87;
+  --acc-1: #137a55;
+  --acc-2: #c04a16;
+  --acc-3: #7b4a9e;
+  --acc-4: #b8436f;
+  --acc-5: #8a6a00;
+  --heat-0: #d6cbb2;
+  --heat-1: #d9c9a3;
+  --heat-2: #c4a873;
+  --heat-3: #a8834a;
+  --heat-4: #87602f;
+  --heat-5: #653f1c;
+  --heat-6: #45280e;
+  --up: #005f00;
+  --down: #9a2426;
+  --on-down: #ffffff;
+  --live: #137a55;
+  --info: #2c6d9c;
+  --info-text: #1c517d;
+  --info-wash: #cfd6d3;
+  --grid: #cfc3a8;
+  --shadow: 0 8px 24px rgba(60, 40, 20, 0.18);
+  --overlay: rgba(0, 0, 0, 0.45);
+}

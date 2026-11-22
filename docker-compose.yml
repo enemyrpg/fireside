@@ -1,0 +1,141 @@
+# Fireside with Docker (Linux, rootful Docker Engine). See docs/self-hosting.md.
+#
+#   mkdir -p data
+#   docker compose up -d
+#
+# Dashboard and plugin URL: http://127.0.0.1:3100 (or FIRESIDE_PORT).
+#
+# The image is the release from GHCR, pinned to this checkout's version
+# (release-please updates the tag in each release). To build it from source
+# instead, add docker-compose.build.yml: set
+# COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml in .env, then
+# `docker compose up -d --build`.
+#
+# Docker-only settings are FIRESIDE_* variables, read by Compose from your shell
+# or from .env. DATA_DIR, PORT and HOST in .env are for `pnpm dev` and are
+# ignored here, so Docker and `pnpm dev` can run side by side.
+#
+#   FIRESIDE_DATA_PATH  Host folder with fireside.db. Relative to this file.
+#                       Default: ./data (the same folder `pnpm dev` uses by
+#                       default, so an existing database is picked up).
+#   FIRESIDE_PORT       Port on 127.0.0.1. Default: 3100. The only port
+#                       variable Compose uses: PORT in .env is ignored here.
+#   FIRESIDE_UID/GID    User the server (and cloudflared) runs as. Must be able
+#                       to write to FIRESIDE_DATA_PATH and read the tunnel token
+#                       file. Default: 1000:1000.
+#   FIRESIDE_TUNNEL_TOKEN_FILE
+#                       Cloudflare Tunnel token, a file with mode 0600 owned by
+#                       FIRESIDE_UID. Relative to this file. Only read by the
+#                       `cloudflared` service. Default: ./secrets/tunnel-token.
+#
+# Cloudflare Tunnel (remote access, docs/tunnel.md): the `cloudflared` service
+# is behind the profile "tunnel" and never starts unless the profile is on.
+# Turn it on with COMPOSE_PROFILES=tunnel in .env, so that the usual
+# `docker compose pull --ignore-buildable` and `docker compose up -d` update
+# and start it too.
+# Fireside must be in login mode with TRUSTED_PROXY=cloudflare and PUBLIC_URL
+# set: without them the dashboard's API answers 403 to every request through
+# the tunnel (the plugin's ingest still works, with its key).
+
+# Shared by both services: rotate the logs, so Docker doesn't keep them (and the
+# IP addresses of security events) forever. docs/self-hosting.md, "Logs".
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: '5'
+
+services:
+  fireside:
+    image: ghcr.io/enemyrpg/fireside:0.0.0 # x-release-please-version
+    # Host networking, so the server sees requests from the browser and the
+    # plugin as coming from 127.0.0.1, and the localhost-only dashboard check
+    # works unchanged. With a published port it would see the Docker bridge
+    # address and answer 403. See docs/decisions/0008-docker-host-networking.md.
+    network_mode: host
+    restart: unless-stopped
+    logging: *logging
+    init: true
+    stop_grace_period: 30s
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Fixed: the server never listens beyond loopback. With host networking,
+      # 0.0.0.0 would be the LAN; remote access goes through the tunnel.
+      HOST: 127.0.0.1
+      PORT: ${FIRESIDE_PORT:-3100}
+      DATA_DIR: /data
+      # In the data volume (data/backups on the host). To keep backups on
+      # another disk, mount it here in a docker-compose.override.yml
+      # (docs/self-hosting.md, "Backups and restore"). Fixed like DATA_DIR, so
+      # a dev value in .env can't point into the read-only image.
+      BACKUP_DIR: /data/backups
+    volumes:
+      - ${FIRESIDE_DATA_PATH:-./data}:/data
+    user: '${FIRESIDE_UID:-1000}:${FIRESIDE_GID:-1000}'
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  # Cloudflare Tunnel (docs/tunnel.md). Connects out to Cloudflare and forwards
+  # requests for PUBLIC_URL to http://127.0.0.1:<FIRESIDE_PORT> (the address is
+  # set on the tunnel's route in the Cloudflare dashboard). Run cloudflared one
+  # way only: this service or the systemd unit from
+  # `scripts/systemd/install.sh --tunnel`, never both (same token, same metrics
+  # port).
+  cloudflared:
+    # Pinned to a version and digest. Dependabot (docker-compose) opens PRs for
+    # new versions.
+    image: cloudflare/cloudflared:2026.11.1@sha256:e613aadbc2d9511785d2e67a86b0c8ac18dd63a3f9af0d06faf04cbfdcb35f2d
+    profiles:
+      - tunnel
+    # Host networking, like the server, so tunnel traffic reaches it from
+    # loopback and the socket check is unchanged. See
+    # docs/decisions/0008-docker-host-networking.md.
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      fireside:
+        condition: service_healthy
+    logging: *logging
+    # The host user, not the image's own (65532): Compose mounts the token
+    # file with its host owner and mode, and 0600 is only readable by its owner.
+    user: '${FIRESIDE_UID:-1000}:${FIRESIDE_GID:-1000}'
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # The token is read from a file, never from the environment (which
+    # `docker inspect` shows) or the command line. In a container cloudflared
+    # serves its metrics on 0.0.0.0 by default, which with host networking is
+    # the LAN: keep them on loopback. Never --loglevel debug: it logs every
+    # request and response header.
+    command:
+      - tunnel
+      - --no-autoupdate
+      - --loglevel
+      - info
+      - --metrics
+      - 127.0.0.1:20241
+      - --management-diagnostics=false
+      - run
+      - --token-file
+      - /run/secrets/tunnel-token
+    secrets:
+      - tunnel-token
+    healthcheck:
+      test: ['CMD', 'cloudflared', 'tunnel', '--metrics', '127.0.0.1:20241', 'ready']
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+secrets:
+  tunnel-token:
+    file: ${FIRESIDE_TUNNEL_TOKEN_FILE:-./secrets/tunnel-token}

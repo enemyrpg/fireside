@@ -1,0 +1,78 @@
+name: Bug report
+description: Something in the server or the dashboard doesn't work as it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. **This issue is public.** Never post API keys,
+        passwords, recovery codes, tunnel tokens, `.env` contents, the host name
+        of your instance, or other players' names. Replace them with something
+        like `fs_…`, `dashboard.example.com` or `Player 1`.
+
+        A security problem? Don't open an issue: report it privately (see
+        SECURITY.md).
+  - type: input
+    id: server-version
+    attributes:
+      label: Server version
+      description: Settings → Server in the dashboard, or `serverVersion` from `GET /api/v1/health`.
+      placeholder: e.g. 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin version
+      description: The Fireside plugin's version in RuneLite (Plugin Hub). "Not relevant" if the plugin isn't involved.
+      placeholder: e.g. 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: contract-version
+    attributes:
+      label: Contract version
+      description: Settings → Server in the dashboard, or `contractVersion` from `GET /api/v1/health`.
+      placeholder: e.g. 1.41.0
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How do you run the server?
+      options:
+        - Docker (image from GHCR)
+        - Docker (built from source)
+        - systemd
+        - pnpm dev
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open …
+        2. Click …
+        3. See …
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant lines from the server log (`docker compose logs fireside` or `journalctl --user -u fireside`). Remove keys, host names, IP addresses and player names first.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you submit
+      options:
+        - label: I have removed API keys, passwords, tokens, host names and other players' names from this issue.
+          required: true

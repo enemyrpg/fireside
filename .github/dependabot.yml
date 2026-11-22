@@ -1,0 +1,69 @@
+# Weekly, grouped: one PR per ecosystem for minor and patch updates, and one
+# for major updates. PR titles follow Conventional Commits (the "PR title"
+# check): chore(deps) for npm and Docker, ci(deps) for GitHub Actions.
+# See docs/decisions/0016-release-setup.md.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore(deps)
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+      major:
+        update-types: [major]
+    ignore:
+      # typescript-eslint does not support TypeScript 7 yet.
+      - dependency-name: typescript
+        update-types: [version-update:semver-major]
+
+  # Every action is pinned to a commit SHA with the version in a comment;
+  # Dependabot updates both.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci(deps)
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+      major:
+        update-types: [major]
+
+  # The Node image in the Dockerfile, pinned to a version and digest in every
+  # FROM. The major version follows .node-version, which is changed by hand
+  # (scripts/docker/check-node-version.sh fails otherwise).
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore(deps)
+    groups:
+      node:
+        patterns: ['node']
+    ignore:
+      - dependency-name: node
+        update-types: [version-update:semver-major]
+
+  # The cloudflared image in docker-compose.yml, pinned to a version and
+  # digest. The Fireside image's tag is set by release-please in each release,
+  # and fireside:local (docker-compose.build.yml) is built, not pulled.
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore(deps)
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+      major:
+        update-types: [major]
+    ignore:
+      - dependency-name: ghcr.io/enemyrpg/fireside
+      - dependency-name: fireside

@@ -1,0 +1,161 @@
+name: Release image
+
+# Builds the Docker image for linux/amd64 and linux/arm64 and pushes it to
+# GHCR when a release v<version> is published (by release-please.yml), tagged
+# <version>, <major>.<minor> and latest. See
+# docs/decisions/0016-release-setup.md and docs/self-hosting.md "Docker".
+#
+# - Contract releases (contract-v*) are skipped.
+# - Both platforms are checked before anything is pushed: image contents,
+#   argon2id and native modules on each (arm64 under QEMU), and the smoke test
+#   on amd64. The push then reuses the same build cache.
+# - The pushed image gets a build provenance attestation:
+#   `gh attestation verify oci://ghcr.io/<owner>/fireside:<version> -R <owner>/fireside`.
+# - Run it by hand with a tag (e.g. v0.1.0) to rebuild an existing release.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build, e.g. v0.1.0
+        required: true
+      latest:
+        description: Also move the latest tag (only for the newest release)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-image-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  image:
+    name: Build and push image
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' ||
+      (startsWith(github.event.release.tag_name, 'v') && !github.event.release.prerelease) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Check the tag against package.json and the Node version
+        id: version
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::Tag $TAG does not match version $version in package.json."
+            exit 1
+          fi
+          scripts/docker/check-node-version.sh
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm64
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build (linux/amd64)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64
+          tags: fireside:local
+          load: true
+          push: false
+          provenance: false
+          cache-from: type=gha,scope=fireside-amd64
+
+      - name: Build (linux/arm64)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/arm64
+          tags: fireside:local-arm64
+          load: true
+          push: false
+          provenance: false
+          cache-from: type=gha,scope=fireside-arm64
+
+      - name: Check image contents
+        run: |
+          scripts/docker/check-image.sh fireside:local
+          scripts/docker/check-image.sh fireside:local-arm64
+
+      - name: Check argon2id and native modules
+        run: |
+          scripts/docker/check-argon2.sh fireside:local
+          scripts/docker/check-native.sh fireside:local linux/amd64
+          scripts/docker/check-argon2.sh fireside:local-arm64 linux/arm64
+          scripts/docker/check-native.sh fireside:local-arm64 linux/arm64
+
+      - name: Smoke test (linux/amd64)
+        run: scripts/docker/smoke-test.sh
+
+      - name: Image tags, labels and annotations
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
+        with:
+          images: ghcr.io/${{ github.repository }}
+          flavor: latest=false
+          tags: |
+            type=semver,pattern={{version}},value=${{ env.TAG }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ env.TAG }}
+            type=raw,value=latest,enable=${{ github.event_name == 'release' || inputs.latest }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.description=Self-hosted tracker for Old School RuneScape: server and dashboard
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.authors=EnemyRPG
+          annotations: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.description=Self-hosted tracker for Old School RuneScape: server and dashboard
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.authors=EnemyRPG
+
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      # The platforms were just built from the same cache, so this only
+      # assembles and pushes them. Buildx provenance is off: the attestation
+      # below replaces it, and keeps `docker buildx imagetools inspect` to the
+      # two real platforms.
+      - name: Push (linux/amd64, linux/arm64)
+        id: push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          cache-from: |
+            type=gha,scope=fireside-amd64
+            type=gha,scope=fireside-arm64
+
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/${{ github.repository }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true

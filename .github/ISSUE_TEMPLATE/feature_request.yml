@@ -1,0 +1,34 @@
+name: Feature request
+description: An idea for something new, or a change to how something works.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea. Fireside only tracks your own accounts, collects
+        nothing about other players, and has no commercial features (see
+        docs/legal.md), so requests that need those can't be accepted.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would it solve?
+      description: What you're trying to do, and what's missing or in the way today.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like?
+      description: How it could work. A sketch or an example helps.
+    validations:
+      required: true
+  - type: textarea
+    id: data
+    attributes:
+      label: New data from the plugin?
+      description: If it needs data the plugin doesn't send today, what data? (Larger changes are agreed in an issue before a pull request, see CONTRIBUTING.md.)
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: Other ways you've thought of, or how you work around it now.

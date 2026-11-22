@@ -1,0 +1,11 @@
+{
+  // Type-checks the TypeScript tools in scripts/ (run with Node's type stripping).
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "lib": ["ES2023", "DOM"],
+    "types": ["node"]
+  },
+  "include": ["**/*.ts"]
+}

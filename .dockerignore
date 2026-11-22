@@ -1,0 +1,29 @@
+# Allowlist: only what the image build needs enters the build context, so
+# .env, data/, seed data, backups and dev files can never end up in the image.
+# Checked in CI by scripts/docker/check-image.sh.
+*
+
+!LICENSE
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!tsconfig.base.json
+!tsconfig.json
+!scripts/package.json
+!shared/
+!server/
+!web/
+
+# Never, even inside the allowed folders.
+**/node_modules
+**/dist
+**/coverage
+**/.env
+**/.env.*
+**/data
+**/data-*
+**/*.db
+**/*.db-*
+**/*.sqlite*
+**/*.log
+**/*.tsbuildinfo

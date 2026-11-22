@@ -1,0 +1,222 @@
+import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { backupStatusResponseSchema, BRANDING } from '@fireside/shared';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { backupFileName, preMigrateFileName } from '../backup/files.js';
+import { tempDir } from '../backup/testing.js';
+import { loadConfig, type BackupConfig } from '../config.js';
+import { databasePath, openDatabase } from '../db/index.js';
+import { backupStatus, nextBackupTime, startBackupJob } from './backup.js';
+
+const N = BRANDING.shortName;
+
+const OSLO = 'Europe/Oslo';
+const at = (iso: string) => Date.parse(iso);
+
+describe('nextBackupTime', () => {
+  const four = { hour: 4, minute: 0 };
+
+  it.each([
+    // Winter: 04:00 in Oslo is 03:00 UTC.
+    ['2026-11-14T01:00:00.000Z', '2026-11-14T03:00:00.000Z'],
+    ['2026-11-14T03:00:00.000Z', '2026-11-15T03:00:00.000Z'],
+    ['2026-11-14T12:00:00.000Z', '2026-11-15T03:00:00.000Z'],
+    // Summer: 02:00 UTC.
+    ['2026-07-01T12:00:00.000Z', '2026-07-02T02:00:00.000Z'],
+    // Across New Year.
+    ['2026-12-31T12:00:00.000Z', '2027-01-01T03:00:00.000Z'],
+  ])('after %s is %s', (after, expected) => {
+    expect(new Date(nextBackupTime(at(after), four, OSLO)).toISOString()).toBe(expected);
+  });
+
+  it('runs a time skipped by DST at the first instant after the gap', () => {
+    // 29 March 2026: Oslo skips 02:00–03:00.
+    const next = nextBackupTime(at('2026-03-28T12:00:00Z'), { hour: 2, minute: 30 }, OSLO);
+    expect(new Date(next).toISOString()).toBe('2026-03-29T01:30:00.000Z');
+  });
+
+  it('runs a time that happens twice only the first time', () => {
+    // 25 October 2026: 02:30 happens at 00:30 and 01:30 UTC.
+    const time = { hour: 2, minute: 30 };
+    const first = nextBackupTime(at('2026-10-24T12:00:00Z'), time, OSLO);
+    expect(new Date(first).toISOString()).toBe('2026-10-25T00:30:00.000Z');
+    expect(new Date(nextBackupTime(first, time, OSLO)).toISOString()).toBe(
+      '2026-10-26T01:30:00.000Z',
+    );
+  });
+});
+
+describe('backup job', () => {
+  const cleanups: (() => void)[] = [];
+  afterEach(() => {
+    vi.useRealTimers();
+    for (const cleanup of cleanups.splice(0).reverse()) cleanup();
+  });
+
+  function setup(env: Record<string, string> = {}) {
+    const { dir, remove } = tempDir();
+    cleanups.push(remove);
+    const config = loadConfig({ DATA_DIR: dir, TZ: OSLO, ...env });
+    const dbFile = databasePath(config.dataDir);
+    const database = openDatabase(dbFile);
+    cleanups.push(() => {
+      database.close();
+    });
+    const logs: { level: string; msg: string; obj: object }[] = [];
+    const log = {
+      info: (obj: object, msg: string) => logs.push({ level: 'info', msg, obj }),
+      warn: (obj: object, msg: string) => logs.push({ level: 'warn', msg, obj }),
+      error: (obj: object, msg: string) => logs.push({ level: 'error', msg, obj }),
+    };
+    return { config, dbFile, logs, log };
+  }
+
+  function start(
+    s: ReturnType<typeof setup>,
+    clock: { now: Date },
+    config: BackupConfig = s.config.backup,
+  ) {
+    const job = startBackupJob({
+      dbFile: s.dbFile,
+      config,
+      timeZone: OSLO,
+      log: s.log,
+      now: () => clock.now,
+      intervalMs: 60_000,
+    });
+    cleanups.push(() => {
+      job.stop();
+    });
+    return job;
+  }
+
+  const status = (s: ReturnType<typeof setup>, job?: ReturnType<typeof start>) =>
+    backupStatusResponseSchema.parse(backupStatus(s.config.backup, OSLO, job?.state()));
+
+  it('backs up at start when there is no backup, then daily at BACKUP_TIME', () => {
+    vi.useFakeTimers();
+    const s = setup();
+    const clock = { now: new Date('2026-11-14T12:00:00.000Z') };
+    const job = start(s, clock);
+    expect(status(s, job)).toMatchObject({
+      enabled: true,
+      count: 1,
+      latest: { fileName: `${N}-20261114-120000Z.db` },
+      nextRunAt: '2026-11-15T03:00:00.000Z',
+      lastError: null,
+    });
+    expect(s.logs).toEqual([
+      expect.objectContaining({
+        msg: 'Backup done',
+        obj: expect.objectContaining({ reason: 'startup' }) as object,
+      }),
+    ]);
+
+    // Not yet due.
+    clock.now = new Date('2026-11-15T02:59:00.000Z');
+    vi.advanceTimersByTime(60_000);
+    expect(status(s, job).count).toBe(1);
+
+    // The laptop slept past 04:00: the next check takes the backup.
+    clock.now = new Date('2026-11-15T07:13:00.000Z');
+    vi.advanceTimersByTime(60_000);
+    expect(status(s, job)).toMatchObject({
+      count: 2,
+      latest: { fileName: `${N}-20261115-071300Z.db` },
+      nextRunAt: '2026-11-16T03:00:00.000Z',
+    });
+    vi.advanceTimersByTime(60_000);
+    expect(status(s, job).count).toBe(2);
+  });
+
+  it('skips the startup backup when the newest one is less than 24 hours old', () => {
+    const s = setup();
+    mkdirSync(s.config.backup.dir, { recursive: true });
+    const recent = backupFileName(at('2026-11-13T13:00:00Z'));
+    writeFileSync(join(s.config.backup.dir, recent), 'x');
+    start(s, { now: new Date('2026-11-14T12:00:00.000Z') });
+    expect(status(s).latest?.fileName).toBe(recent);
+
+    // A day and a bit later it is taken.
+    start(s, { now: new Date('2026-11-14T13:00:01.000Z') });
+    expect(status(s)).toMatchObject({ count: 2, latest: { fileName: `${N}-20261114-130001Z.db` } });
+  });
+
+  it('keeps the last error until a backup succeeds', () => {
+    vi.useFakeTimers();
+    const s = setup();
+    // A file where the folder should be: every backup fails.
+    writeFileSync(s.config.backup.dir, 'not a folder');
+    const clock = { now: new Date('2026-11-14T12:00:00.000Z') };
+    const job = start(s, clock);
+    expect(status(s, job).lastError).toMatchObject({ at: '2026-11-14T12:00:00.000Z' });
+    expect(status(s, job).lastError?.message).toMatch(/EEXIST|ENOTDIR/);
+    expect(s.logs.at(-1)).toMatchObject({ level: 'error', msg: 'Backup failed' });
+
+    // Fixed before the next scheduled run.
+    rmSync(s.config.backup.dir);
+    clock.now = new Date('2026-11-15T03:00:00.000Z');
+    vi.advanceTimersByTime(60_000);
+    expect(status(s, job)).toMatchObject({ count: 1, lastError: null });
+  });
+
+  it('reports an unreadable backup folder instead of failing', () => {
+    const s = setup({ BACKUP_ENABLED: 'false' });
+    writeFileSync(s.config.backup.dir, 'not a folder');
+    expect(status(s)).toMatchObject({
+      count: 0,
+      latest: null,
+      lastError: { message: expect.stringMatching(/^Can't read the backup folder/) as string },
+    });
+  });
+
+  it('does nothing when automatic backups are off', () => {
+    vi.useFakeTimers();
+    const s = setup({ BACKUP_ENABLED: 'false' });
+    const clock = { now: new Date('2026-11-14T12:00:00.000Z') };
+    const job = start(s, clock);
+    clock.now = new Date('2026-11-20T12:00:00.000Z');
+    vi.advanceTimersByTime(10 * 60_000);
+    expect(status(s, job)).toEqual({
+      enabled: false,
+      latest: null,
+      count: 0,
+      totalSizeBytes: 0,
+      nextRunAt: null,
+      lastError: null,
+    });
+    expect(s.logs).toEqual([]);
+  });
+
+  it('removes copies older than the max age at start, also with automatic backups off', () => {
+    vi.useFakeTimers();
+    const s = setup({ BACKUP_ENABLED: 'false' });
+    mkdirSync(s.config.backup.dir, { recursive: true });
+    const old = preMigrateFileName(Date.parse('2026-04-01T03:00:00Z'));
+    const recent = preMigrateFileName(Date.parse('2026-10-01T03:00:00Z'));
+    for (const name of [old, recent, 'keep-me.txt']) {
+      writeFileSync(join(s.config.backup.dir, name), 'x');
+    }
+    start(s, { now: new Date('2026-11-14T12:00:00.000Z') });
+    expect(readdirSync(s.config.backup.dir).sort()).toEqual(['keep-me.txt', recent].sort());
+    expect(s.logs.map((entry) => entry.msg)).toEqual([
+      expect.stringContaining('the max age of backups counts only the time the server has run'),
+      'Removed old backups',
+    ]);
+    expect(s.logs[0]?.obj).toEqual({
+      clock: '2026-11-14T12:00:00.000Z',
+      reference: '2026-10-02T03:00:00.000Z',
+    });
+  });
+
+  it('stops', () => {
+    vi.useFakeTimers();
+    const s = setup();
+    const clock = { now: new Date('2026-11-14T12:00:00.000Z') };
+    const job = start(s, clock);
+    job.stop();
+    clock.now = new Date('2026-11-16T12:00:00.000Z');
+    vi.advanceTimersByTime(10 * 60_000);
+    expect(status(s).count).toBe(1);
+  });
+});

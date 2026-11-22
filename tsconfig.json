@@ -1,0 +1,11 @@
+{
+  // Type-checks root config files. Each package has its own tsconfig.json.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "allowJs": true,
+    "checkJs": true,
+    "types": ["node"]
+  },
+  "include": ["*.ts", "*.js"]
+}

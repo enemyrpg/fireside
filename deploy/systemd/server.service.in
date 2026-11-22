@@ -1,0 +1,36 @@
+# systemd user service for running the server without Docker.
+# Template: scripts/systemd/install.sh fills in the @...@ placeholders with
+# absolute paths and writes ~/.config/systemd/user/@SHORT_NAME@.service.
+# See README "Autostart".
+
+[Unit]
+Description=@DISPLAY_NAME@ server
+Documentation=file://@REPO_ROOT@/README.md
+
+[Service]
+Type=exec
+WorkingDirectory=@REPO_ROOT@
+# The server also reads .env itself and never overrides variables set here.
+# Keep .env to plain KEY=value lines with comments on their own lines:
+# systemd and Node parse anything fancier differently.
+EnvironmentFile=-@REPO_ROOT@/.env
+Environment=NODE_ENV=production
+@EXTRA_ENVIRONMENT@
+ExecStart=@EXEC_START@
+# Restart after a crash, but not when another server holds the database
+# (75: Docker or `pnpm dev` runs on the same DATA_DIR) or .env is invalid (78).
+Restart=on-failure
+RestartSec=5
+RestartPreventExitStatus=75 78
+# The server closes the database (and checkpoints the WAL) on SIGTERM.
+TimeoutStopSec=30
+# Logs go to the journal: journalctl --user -u @SHORT_NAME@ -f
+SyslogIdentifier=@SHORT_NAME@
+NoNewPrivileges=yes
+# The database, backups and 2FA key are for this user only (folders 0700,
+# files 0600). The server sets the same umask itself; this covers anything
+# that runs before it.
+UMask=0077
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,12 @@
+{
+  "banks": [],
+  "totals": {
+    "geValue": 0,
+    "haValue": 0,
+    "cashValue": 0
+  },
+  "prices": {
+    "source": "SNAPSHOT",
+    "fetchedAt": null
+  }
+}

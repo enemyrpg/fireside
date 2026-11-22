@@ -1,0 +1,2 @@
+# LF everywhere, so the contract package has the same bytes on every OS.
+* text=auto eol=lf

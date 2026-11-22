@@ -1,0 +1,17 @@
+# Gitleaks (the "Gitleaks" check in .github/workflows/pr.yml): the default
+# rules, plus the made-up values the contract fixtures and tests use. Only
+# these exact values are allowed, so a real key in a fixture is still found.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Made-up tokens, keys and TOTP secrets in fixtures and tests"
+regexTarget = "secret"
+regexes = [
+  # Invite and password reset token (base64url of a fixture sentence).
+  '''^Q2xhdWRlIG1hZGUgdGhpcyBmaXh0dXJlIHRva2VuIQ$''',
+  # The fixture API key.
+  '''^fs_a1b2Cd3eFg4hIj5kLm6nOp7qRs8tUv9wXy0zAb1cD2e$''',
+  # A TOTP secret that the schema must reject.
+  '''^JBSWY3DPEHPK3PX1$''',
+]

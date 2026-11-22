@@ -1,0 +1,298 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Actions minutes are limited, so:
+# - "Lint, test and build" runs on pull requests and by hand, not on push to
+#   main: a PR run already tested the merge with main.
+# - On pull requests, "changes" decides which jobs are needed. A docs-only PR
+#   skips "Lint, test and build", and a PR that touches nothing in the image
+#   skips "Docker image". Skipped jobs count as passed for required checks.
+#   A PR that only touches web/ runs only the web tests, and one that only
+#   touches server/ only the server tests (the `tests` output). Anything
+#   else (shared/, scripts/, .github/, root config) runs every test. Lint,
+#   type check and build always cover the whole repo.
+#   This is why there is no workflow-level `paths:`: it would leave required
+#   checks pending.
+# - "CSP in Chromium" runs the built dashboard in Chromium. On pull requests
+#   only when the dashboard, the security headers or the check itself change;
+#   always on push to main.
+# - "Docs" checks relative links in Markdown and the .env reference
+#   (scripts/docs-check/check-docs.ts). It runs on every pull request, also
+#   docs-only ones that skip "Lint, test and build", and needs no
+#   `pnpm install`.
+# - If "changes" fails, every job runs (fail open).
+jobs:
+  changes:
+    name: Detect changes
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+      docker: ${{ steps.filter.outputs.docker }}
+      csp: ${{ steps.filter.outputs.csp }}
+      tests: ${{ steps.filter.outputs.tests }}
+    steps:
+      # The PR merge commit and its first parent (the base branch).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+
+      - name: List changed files
+        id: filter
+        run: |
+          files=$(git diff --name-only HEAD^1 HEAD)
+          echo "$files"
+          # Everything outside docs/ is linted, tested or built (README.md is
+          # tested against the branding constants, Markdown is checked by
+          # Prettier).
+          code=false
+          if grep -qv '^docs/' <<< "$files"; then code=true; fi
+          # Which test projects to run. docs/ has no tests and is left out.
+          # Only web/ left: the web project. Only server/ left: the server
+          # project. Both, or anything else (shared/ is used by both, scripts/,
+          # .github/, package.json, pnpm-lock.yaml, tsconfig*, vitest and
+          # eslint config, and every other path): all projects.
+          tests=all
+          tested=$(grep -v '^docs/' <<< "$files" || true)
+          if [ -n "$tested" ]; then
+            if ! grep -qv '^web/' <<< "$tested"; then tests=web; fi
+            if ! grep -qv '^server/' <<< "$tested"; then tests=server; fi
+          fi
+          # Keep in sync with .dockerignore, the Dockerfile and the Docker job.
+          docker=false
+          if grep -qE '^(Dockerfile|\.dockerignore|\.node-version|LICENSE|package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|tsconfig(\.base)?\.json|docker-compose(\.build)?\.yml|scripts/package\.json|scripts/docker/|shared/|server/|web/|\.github/workflows/ci\.yml)' <<< "$files"; then
+            docker=true
+          fi
+          # The dashboard (theme script included), the headers and the check.
+          csp=false
+          if grep -qE '^(web/|server/src/security-headers\.ts|scripts/csp-check/|scripts/package\.json|\.github/workflows/ci\.yml)' <<< "$files"; then
+            csp=true
+          fi
+          echo "code=$code docker=$docker csp=$csp tests=$tests"
+          echo "tests=$tests" >> "$GITHUB_OUTPUT"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "docker=$docker" >> "$GITHUB_OUTPUT"
+          echo "csp=$csp" >> "$GITHUB_OUTPUT"
+
+  check:
+    name: Lint, test and build
+    needs: changes
+    if: >-
+      ${{ !cancelled() && github.event_name != 'push' &&
+      (needs.changes.result != 'success' || needs.changes.outputs.code == 'true') }}
+    runs-on: ubuntu-latest
+    # Runner speed varies by about 2× between runs (the same tests took 7 and
+    # 13+ minutes in November 2026), so leave room above the usual ~10 minutes.
+    # 19 November 2026: three runs in a row hit the old limit of 20 minutes with
+    # no failing or hanging test. Every step was 1.6–2× slower than in a run a
+    # few hours earlier, lint and tests of untouched code included, on an older
+    # runner image (20261111.196.1, the faster run had 20261116.202.1).
+    # `pnpm test` alone needed over 18 minutes instead of ~10.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Uses the pnpm version from "packageManager" in package.json.
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      # Type-checked ESLint over the whole repo peaks at about 2 GB, right at
+      # Node's default heap limit on the runner, so it crashed at random with
+      # "heap out of memory".
+      - run: pnpm lint
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+
+      # Fails if the Drizzle schema changed without a committed migration.
+      # drizzle-kit can crash with exit code 0 (e.g. when a rename needs an
+      # answer), so only its explicit "no changes" message counts as a pass.
+      # drizzle-kit is pinned in server/package.json, so the message only
+      # changes on a deliberate upgrade.
+      - name: Check database migrations
+        run: |
+          pnpm --filter @fireside/server db:check
+          output=$(timeout 120 pnpm --filter @fireside/server db:generate < /dev/null 2>&1) || true
+          echo "$output"
+          if ! grep -q "No schema changes" <<< "$output" || [ -n "$(git status --porcelain server/drizzle)" ]; then
+            echo "::error::Migrations are out of date. Run 'pnpm --filter @fireside/server db:generate' and commit server/drizzle/."
+            exit 1
+          fi
+
+      - run: pnpm typecheck
+      # Vitest's default is one worker fewer than the cores. The runner has
+      # two, so the test files ran one at a time with a core idle: about 20
+      # minutes in November 2026. 100% is one worker per core.
+      #
+      # On a pull request only the projects "changes" found affected (`web`
+      # or `server`). Everything on a manual run, and if "changes" failed or
+      # gave anything else (fail open).
+      - name: Run tests
+        env:
+          TESTS: ${{ needs.changes.outputs.tests }}
+        run: |
+          case "$TESTS" in
+            web | server) pnpm test --maxWorkers=100% --project "$TESTS" ;;
+            *) pnpm test --maxWorkers=100% ;;
+          esac
+      - run: pnpm build
+
+  # Relative links in Markdown resolve, and docs/self-hosting.md lists exactly
+  # the variables in .env.example. Plain Node, no dependencies.
+  docs:
+    name: Docs
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+
+      - run: node scripts/docs-check/check-docs.ts
+
+  # The production build in Chromium with the server's CSP: no violations on
+  # any page, dialog, select, popover, dropdown or toast
+  # (scripts/csp-check/check-csp.ts).
+  csp:
+    name: CSP in Chromium
+    needs: changes
+    if: >-
+      ${{ !cancelled() &&
+      (needs.changes.result != 'success' || needs.changes.outputs.csp == 'true') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      # GitHub's Ubuntu runners ship Google Chrome. Use it when it starts, so
+      # the job doesn't depend on the Ubuntu apt mirrors; fall back to
+      # Playwright's Chromium (installed with apt dependencies) otherwise.
+      - name: Find or install Chrome
+        id: browser
+        run: |
+          chrome="$(command -v google-chrome || true)"
+          if [ -n "$chrome" ] && "$chrome" --version; then
+            echo "Using the preinstalled $chrome"
+            echo "path=$chrome" >> "$GITHUB_OUTPUT"
+          else
+            echo "No working preinstalled Chrome: installing Playwright's Chromium"
+            pnpm --filter @fireside/scripts exec playwright install --with-deps chromium
+          fi
+      - run: pnpm test:csp
+        env:
+          CHROMIUM_PATH: ${{ steps.browser.outputs.path }}
+
+  # Builds the Docker image without pushing it (release-image.yml publishes
+  # it to GHCR for each release). See Dockerfile and README "Docker". Always runs on push to main,
+  # so the build cache stays warm for PRs.
+  docker:
+    name: Docker image
+    needs: changes
+    if: >-
+      ${{ !cancelled() &&
+      (needs.changes.result != 'success' || needs.changes.outputs.docker == 'true') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check that the image uses the Node version from .node-version
+        run: scripts/docker/check-node-version.sh
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build (linux/amd64)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64
+          tags: fireside:local
+          load: true
+          push: false
+          cache-from: type=gha,scope=fireside-amd64
+          cache-to: type=gha,scope=fireside-amd64,mode=max
+
+      # No image files other than the favicon in our own files, and no .env,
+      # database or data files anywhere (see docs/legal.md).
+      - name: Check image contents
+        run: scripts/docker/check-image.sh fireside:local
+
+      # Passwords use Node's built-in argon2id: check it works.
+      - name: Check argon2id and native modules (linux/amd64)
+        run: |
+          scripts/docker/check-argon2.sh fireside:local
+          scripts/docker/check-native.sh fireside:local linux/amd64
+
+      # The compose files are valid with and without the tunnel profile and
+      # the build file. Only parses them: nothing is pulled or started, and the
+      # token is a dummy in a temporary folder.
+      - name: Check docker-compose.yml
+        run: |
+          docker compose config --quiet
+          docker compose -f docker-compose.yml -f docker-compose.build.yml config --quiet
+          [ "$(docker compose -f docker-compose.yml -f docker-compose.build.yml config --images)" = 'fireside:local' ]
+          token_dir="$(mktemp -d)"
+          printf 'dummy' > "$token_dir/tunnel-token"
+          chmod 600 "$token_dir/tunnel-token"
+          FIRESIDE_TUNNEL_TOKEN_FILE="$token_dir/tunnel-token" COMPOSE_PROFILES=tunnel \
+            docker compose config --quiet
+          [ "$(COMPOSE_PROFILES=tunnel docker compose config --services | sort | tr '\n' ' ')" = 'cloudflared fireside ' ]
+          [ "$(docker compose config --services)" = 'fireside' ]
+
+      # Host networking, healthy, 127.0.0.1 only, dashboard answers 200, CLI.
+      - name: Smoke test
+        run: scripts/docker/smoke-test.sh
+
+      # arm64 runs under QEMU and takes several minutes, so only on main and
+      # when started by hand.
+      - if: github.event_name != 'pull_request'
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm64
+
+      - name: Build (linux/arm64)
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/arm64
+          tags: fireside:local-arm64
+          load: true
+          push: false
+          cache-from: type=gha,scope=fireside-arm64
+          cache-to: type=gha,scope=fireside-arm64,mode=max
+
+      - name: Check argon2id and native modules (linux/arm64)
+        if: github.event_name != 'pull_request'
+        run: |
+          scripts/docker/check-argon2.sh fireside:local-arm64 linux/arm64
+          scripts/docker/check-native.sh fireside:local-arm64 linux/arm64

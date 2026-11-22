@@ -1,0 +1,30 @@
+# systemd user service for Cloudflare Tunnel (cloudflared) without Docker.
+# Template: scripts/systemd/install.sh --tunnel fills in the @...@ placeholders
+# and writes ~/.config/systemd/user/@SHORT_NAME@-tunnel.service.
+# See docs/tunnel.md.
+
+[Unit]
+Description=@DISPLAY_NAME@ Cloudflare Tunnel
+Documentation=file://@REPO_ROOT@/docs/tunnel.md
+# Start after the server, and with it. cloudflared retries by itself if the
+# server isn't answering yet.
+After=@SHORT_NAME@.service
+Wants=@SHORT_NAME@.service
+
+[Service]
+Type=exec
+# The token is read from a file (mode 0600), never from the environment or
+# the command line, where `ps` and `systemctl show` would show it. This unit
+# does not read .env. Metrics stay on loopback. Never --loglevel debug: it
+# logs every request and response header.
+ExecStart="@CLOUDFLARED@" tunnel --no-autoupdate --loglevel info --metrics 127.0.0.1:20241 --management-diagnostics=false run --token-file "@TOKEN_FILE@"
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+# Logs go to the journal: journalctl --user -u @SHORT_NAME@-tunnel -f
+SyslogIdentifier=@SHORT_NAME@-tunnel
+NoNewPrivileges=yes
+UMask=0077
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,100 @@
+name: Release contract package
+
+# Publishes shared/dist/contract-v<version>.zip as a GitHub release when a
+# tag like "contract-v1.2.0" is pushed. See
+# docs/architecture.md#the-contract-package.
+on:
+  push:
+    tags: ['contract-v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-contract-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish contract package
+    runs-on: ubuntu-latest
+    # Creates the GitHub release.
+    permissions:
+      contents: write
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history, so we can check that the tag is on main.
+          fetch-depth: 0
+
+      - name: Check that the tag is on main
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::Tag $GITHUB_REF_NAME points to a commit that is not on main."
+            exit 1
+          fi
+
+      # Uses the pnpm version from "packageManager" in package.json.
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      # Only the shared tests: the tag is on main, so the full suite already
+      # passed in CI on the pull request.
+      - run: pnpm test --project shared
+      - run: pnpm --filter @fireside/shared build
+
+      - name: Check that the tag matches the contract version
+        id: version
+        run: |
+          tag_version="${GITHUB_REF_NAME#contract-v}"
+          contract_version="$(node -p "require('./shared/dist/contract/manifest.json').contractVersion")"
+          event_schema_version="$(node -p "require('./shared/dist/contract/manifest.json').eventSchemaVersion")"
+          if [ "$tag_version" != "$contract_version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match CONTRACT_VERSION $contract_version in shared/src/contract.ts."
+            exit 1
+          fi
+          echo "version=$contract_version" >> "$GITHUB_OUTPUT"
+          echo "event_schema_version=$event_schema_version" >> "$GITHUB_OUTPUT"
+
+      - name: Write checksum
+        id: checksum
+        working-directory: shared/dist
+        env:
+          ZIP: contract-v${{ steps.version.outputs.version }}.zip
+        run: |
+          sha256sum "$ZIP" > "$ZIP.sha256"
+          cat "$ZIP.sha256"
+          echo "sha256=$(cut -d ' ' -f 1 "$ZIP.sha256")" >> "$GITHUB_OUTPUT"
+
+      # Fails if the release already exists: a published version is never
+      # replaced. Bump CONTRACT_VERSION instead.
+      - name: Create release
+        working-directory: shared/dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          EVENT_SCHEMA_VERSION: ${{ steps.version.outputs.event_schema_version }}
+          SHA256: ${{ steps.checksum.outputs.sha256 }}
+        run: |
+          notes="$(cat <<NOTES
+          Contract package for plugin and server.
+
+          - Contract version: \`$VERSION\`
+          - Event \`schemaVersion\`: \`$EVENT_SCHEMA_VERSION\`
+          - SHA-256 of \`contract-v$VERSION.zip\`: \`$SHA256\`
+
+          JSON Schemas, fixtures and \`manifest.json\` (schema list, fixture
+          folders, notes). MIT licensed.
+          NOTES
+          )"
+          gh release create "$GITHUB_REF_NAME" \
+            "contract-v$VERSION.zip" \
+            "contract-v$VERSION.zip.sha256" \
+            --title "Contract v$VERSION" \
+            --notes "$notes"

@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "noEmit": false,
+    "customConditions": []
+  },
+  "include": ["src"],
+  // testing.ts files are test helpers that import vitest.
+  "exclude": ["src/**/*.test.ts", "src/**/testing.ts"]
+}

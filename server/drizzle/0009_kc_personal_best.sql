@@ -1,0 +1,1 @@
+ALTER TABLE `kc_observations` ADD `personal_best_seconds` real;

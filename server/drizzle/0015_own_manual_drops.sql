@@ -1,0 +1,1 @@
+ALTER TABLE `raid_manual_drops` ADD `recipient` text DEFAULT 'TEAMMATE' NOT NULL;

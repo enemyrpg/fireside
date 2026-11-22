@@ -1,0 +1,29 @@
+@import 'tailwindcss';
+@import '@fontsource-variable/inter';
+@import '@fontsource/jetbrains-mono/400.css';
+@import '@fontsource/jetbrains-mono/500.css';
+/*
+ * Space Grotesk (`font-display`) for its roles in docs/design.md: page titles, the big
+ * numbers (`StatStrip`), numbers in cards and tiles, and dialog titles.
+ */
+@import '@fontsource/space-grotesk/500.css';
+@import '@fontsource/space-grotesk/600.css';
+@import '@fontsource/space-grotesk/700.css';
+@import './theme/themes.css';
+@import './theme/tokens.css';
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* A dialog as a sheet from the bottom on mobile (`dialogSurface`). */
+@keyframes sheet-in {
+  from {
+    transform: translateY(100%);
+  }
+}
