@@ -47,7 +47,7 @@ x-logging: &logging
 
 services:
   fireside:
-    image: ghcr.io/enemyrpg/fireside:0.0.0 # x-release-please-version
+    image: ghcr.io/enemyrpg/fireside:0.1.0 # x-release-please-version
     # Host networking, so the server sees requests from the browser and the
     # plugin as coming from 127.0.0.1, and the localhost-only dashboard check
     # works unchanged. With a published port it would see the Docker bridge
