@@ -154,7 +154,7 @@ export function SessionsPage() {
   // An empty `?session=` is no selection.
   const raw = searchParams.get(SESSION_PARAM);
   const param = raw === null || raw === '' ? undefined : raw;
-  const sessions = useSessions(scope, { limit: SESSIONS_PAGE_SIZE });
+  const sessions = useSessions(scope, { limit: SESSIONS_PAGE_SIZE }, { pollWhileOpen: true });
   const accounts = useAccounts().data?.accounts;
   const colors = useMemo(() => accountColors(accounts ?? []), [accounts]);
   const items = useMemo(() => sessions.data?.pages.flatMap((page) => page.items), [sessions.data]);

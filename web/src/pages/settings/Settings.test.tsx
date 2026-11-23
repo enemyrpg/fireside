@@ -424,6 +424,7 @@ describe('OSRS accounts', () => {
               lastSeenAt: '2026-11-08T19:05:00.000Z',
               totalLevel: null,
               totalXp: null,
+              latestSession: null,
             },
           ],
         },

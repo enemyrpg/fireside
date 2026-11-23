@@ -7,7 +7,11 @@
       "firstSeenAt": "2026-11-08T19:00:00.000Z",
       "lastSeenAt": "2026-11-08T19:05:00.000Z",
       "totalLevel": 32,
-      "totalXp": 1154
+      "totalXp": 1154,
+      "latestSession": {
+        "endedAt": null,
+        "endReason": null
+      }
     }
   ]
 }

@@ -9,6 +9,7 @@ import {
 } from '@fireside/shared';
 import { localDateIn, parseLocalDate } from '@/format';
 import { accountName, isOnline } from './accounts';
+import { isSessionLive } from './session-stats';
 import { isShortGroup, mergeHops, type SessionGroup } from './session-groups';
 import { dateKey } from './time';
 
@@ -29,6 +30,17 @@ export function isOpenSession(session: Pick<Session, 'endedAt'>): boolean {
 /** Whether any session in the list is still open. */
 export function hasOpenSession(sessions: readonly Pick<Session, 'endedAt'>[]): boolean {
   return sessions.some(isOpenSession);
+}
+
+/**
+ * Whether any session in the list is live (`isSessionLive`): open, or ended by
+ * a hop under 2 minutes ago. What Home and the Sessions page poll on.
+ */
+export function hasLiveSession(
+  sessions: readonly Pick<Session, 'endedAt' | 'endReason'>[],
+  nowMs = Date.now(),
+): boolean {
+  return sessions.some((session) => isSessionLive(session, nowMs));
 }
 
 /**
@@ -60,8 +72,8 @@ export interface OnlineLineInput {
 
 /**
  * The line beside "This week": who is online, else when you last played.
- * Online is the account switcher's rule (a heartbeat in the last 3 minutes),
- * so the page and the shell agree.
+ * Online is the account switcher's rule (`isOnline`: a recent heartbeat and
+ * a live newest session), so the page and the shell agree.
  */
 export function onlineLine({ accounts, all, sessions, nowMs, relative }: OnlineLineInput): string {
   const online = accounts.filter((account) => isOnline(account, nowMs));

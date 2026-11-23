@@ -58,7 +58,7 @@ import {
 } from '@tanstack/react-query';
 import { apiGet, apiSend } from './client';
 import { isImportingIcons } from '@/lib/icons';
-import { hasOpenSession } from '@/lib/overview';
+import { hasLiveSession } from '@/lib/overview';
 import { withSnapshot } from '@/lib/quests';
 import { shouldPollSession } from '@/lib/session-stats';
 import {
@@ -114,10 +114,22 @@ export function useHealth() {
 
 // --- Accounts and XP ----------------------------------------------------------
 
-export function useAccounts({ live, fresh = false }: LiveOption & { fresh?: boolean } = {}) {
+/**
+ * `GET /accounts`. `live` is a flag or, as in the shell, a test of the list
+ * itself (`anyOnline`), checked again after every fetch, so "Online" turns
+ * into offline within one poll after a logout. Observers share the query, so
+ * several of them still fetch once per interval.
+ */
+export function useAccounts({
+  live,
+  fresh = false,
+}: {
+  live?: boolean | ((data: AccountsResponse | undefined) => boolean);
+  fresh?: boolean;
+} = {}) {
   return useQuery({
     queryKey: ['accounts'],
-    ...liveOptions(live),
+    ...(live === undefined || live === false ? {} : livePolling<AccountsResponse>(live)),
     // `fresh` asks again on mount, for a decision that must not rest on the cache.
     ...(fresh ? { refetchOnMount: 'always' as const } : {}),
     queryFn: ({ signal }) => apiGet<AccountsResponse>('accounts-response', '/accounts', { signal }),
@@ -343,7 +355,9 @@ export interface SessionsParams extends TimeRange {
 
 /**
  * Sessions, newest first, one page per `fetchNextPage`. With `pollWhileOpen`
- * (Home), fetched again every 30 s while the list has an open session.
+ * (Home, Sessions), fetched again every 30 s while the list has a live
+ * session (`isSessionLive`): open, or ended by a hop under 2 minutes ago, so a
+ * poll that lands between the two parts of a hop keeps polling.
  */
 export function useSessions(
   scope: AccountScope,
@@ -354,7 +368,7 @@ export function useSessions(
     queryKey: ['sessions', scope, params],
     ...(pollWhileOpen
       ? livePolling<InfiniteData<SessionsResponse>>((data) =>
-          (data?.pages ?? []).some((page) => hasOpenSession(page.items)),
+          hasLiveSession((data?.pages ?? []).flatMap((page) => page.items)),
         )
       : {}),
     // No previous data: the only change is the account, and another account's

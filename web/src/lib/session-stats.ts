@@ -1,5 +1,6 @@
 import {
   isKnownSkill,
+  type Session,
   type SessionDetailResponse,
   type SessionLoot,
   type SessionXp,
@@ -53,9 +54,24 @@ export function sessionNumbers(detail: SessionDetailResponse): SessionNumbers {
 }
 
 /**
- * Whether Session detail should keep fetching: while the session is open, and
- * for up to 2 minutes after it ended with a world hop until the next part
- * shows up as `neighbors.newerId` (the same window as merging hops).
+ * Whether a session still counts as live: open, or ended by a world hop less
+ * than 2 minutes ago (the same window as merging hops), while the next part
+ * may not have arrived yet. The one rule behind "Online" (`isOnline`), Home's
+ * and the Sessions page's polling (`useSessions`) and Session detail's
+ * (`shouldPollSession`), so a hop never shows as offline or stops a page.
+ */
+export function isSessionLive(
+  session: Pick<Session, 'endedAt' | 'endReason'>,
+  nowMs = Date.now(),
+): boolean {
+  if (session.endedAt === null) return true;
+  return session.endReason === 'hop' && nowMs - Date.parse(session.endedAt) < HOP_MERGE_MS;
+}
+
+/**
+ * Whether Session detail should keep fetching: while the session is live
+ * (`isSessionLive`), but after a hop only until the next part shows up as
+ * `neighbors.newerId`.
  */
 export function shouldPollSession(
   detail: SessionDetailResponse | undefined,
@@ -64,11 +80,7 @@ export function shouldPollSession(
   if (!detail) return false;
   const { session, neighbors } = detail;
   if (session.endedAt === null) return true;
-  return (
-    session.endReason === 'hop' &&
-    neighbors.newerId === null &&
-    nowMs - Date.parse(session.endedAt) < HOP_MERGE_MS
-  );
+  return neighbors.newerId === null && isSessionLive(session, nowMs);
 }
 
 // --- Sections (six-row rule) ------------------------------------------------------

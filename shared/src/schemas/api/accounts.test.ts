@@ -10,6 +10,7 @@ const summary = {
   lastSeenAt: '2026-11-08T21:00:00.000Z',
   totalLevel: 1850,
   totalXp: 123456789,
+  latestSession: { endedAt: null, endReason: null },
 };
 
 describe('GET /accounts', () => {
@@ -41,6 +42,32 @@ describe('GET /accounts', () => {
     );
   });
 
+  it('accepts the newest session open, ended, or none (since 1.42.0)', () => {
+    list.accepts({ accounts: [{ ...summary, latestSession: { endedAt: null, endReason: null } }] });
+    for (const endReason of ['logout', 'client_closed', 'hop', 'timeout']) {
+      list.accepts({
+        accounts: [
+          { ...summary, latestSession: { endedAt: '2026-11-08T21:00:00.000Z', endReason } },
+        ],
+      });
+    }
+    list.accepts({ accounts: [{ ...summary, latestSession: null }] });
+  });
+
+  it('requires latestSession, with endedAt and endReason set together', () => {
+    const withoutLatest: Record<string, unknown> = { ...summary };
+    delete withoutLatest.latestSession;
+    list.rejects({ accounts: [withoutLatest] });
+    for (const latestSession of [
+      { endedAt: null, endReason: 'logout' },
+      { endedAt: '2026-11-08T21:00:00.000Z', endReason: null },
+      { endedAt: '2026-11-08T21:00:00.000Z', endReason: 'crash' },
+      { endedAt: null, endReason: null, world: 302 },
+    ]) {
+      list.rejects({ accounts: [{ ...summary, latestSession }] });
+    }
+  });
+
   it('does not expose the account hash', () => {
     list.rejects({ accounts: [{ ...summary, accountHash: '1234567890123456789' }] });
   });
@@ -63,6 +90,11 @@ describe('GET /accounts/:accountId', () => {
 
   it('accepts an account with name history', () => {
     detail.accepts({ ...summary, names });
+  });
+
+  it('has the same latestSession as the list', () => {
+    detail.accepts({ ...summary, latestSession: null, names });
+    detail.rejects({ ...summary, latestSession: { endedAt: null, endReason: 'hop' }, names });
   });
 
   it('requires names and rejects extra keys', () => {

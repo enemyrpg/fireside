@@ -17,6 +17,7 @@ import {
   emptyRun,
   eventFactory,
   ingestBatch,
+  runRebuild,
   sessionIdOf,
   type TestRun,
 } from '../projections/testing.js';
@@ -137,6 +138,8 @@ describe('GET /accounts and /accounts/:accountId', () => {
         lastSeenAt: '2026-11-06T12:00:00.000Z',
         totalLevel: 52 + 23,
         totalXp: 150_000,
+        // XP snapshots only: no session.* event, so no session.
+        latestSession: null,
       },
       {
         id: Number(ids.a),
@@ -147,6 +150,8 @@ describe('GET /accounts and /accounts/:accountId', () => {
         // s3: SLAYER 90 + 23 skills at level 1; 5,346,332 + 100 + 500.
         totalLevel: 113,
         totalXp: 5_346_932,
+        // No heartbeat or end: closed by the timeout at its start.
+        latestSession: { endedAt: '2026-11-01T09:59:00.000Z', endReason: 'timeout' },
       },
       {
         id: Number(ids.c),
@@ -156,8 +161,21 @@ describe('GET /accounts and /accounts/:accountId', () => {
         lastSeenAt: '2026-11-02T12:00:00.000Z',
         totalLevel: null,
         totalXp: null,
+        latestSession: { endedAt: '2026-11-02T12:00:00.000Z', endReason: 'timeout' },
       },
     ]);
+  });
+
+  it('gives one account with the same summary as the list', async () => {
+    start(threeAccounts());
+    const { accounts: list } = await get('/api/v1/accounts', accountsResponseSchema);
+    for (const summary of list) {
+      const detail = await get(
+        `/api/v1/accounts/${String(summary.id)}`,
+        accountDetailResponseSchema,
+      );
+      expect(detail).toEqual({ ...summary, names: detail.names });
+    }
   });
 
   it('gives one account with its name history, oldest first', async () => {
@@ -616,5 +634,81 @@ describe('GET /accounts/:accountId/xp', () => {
     }
     const { body } = await getError('/api/v1/accounts/all/xp?bucket=year');
     expect(body.error.details[0]?.path).toBe('query.bucket');
+  });
+});
+
+describe('latestSession in GET /accounts', () => {
+  // TEST_NOW is 2026-11-09T12:00Z; sessions are kept within the timeout so
+  // that an open one stays open.
+  const a = (n: number) => ({ accountHash: HASH_A, sessionId: sessionIdOf(n) });
+
+  /** Three sessions on A (logout, hop, then open), one ended session on C, none on B. */
+  function manySessions(f = eventFactory()): Event[] {
+    const c = { accountHash: HASH_C, sessionId: sessionIdOf(9) };
+    return [
+      f.sessionStart('2026-11-09T09:00:00.000Z', a(1)),
+      f.heartbeat('2026-11-09T09:01:00.000Z', a(1)),
+      f.sessionEnd('2026-11-09T10:00:00.000Z', { reason: 'logout', ...a(1) }),
+      f.sessionStart('2026-11-09T11:00:00.000Z', a(2)),
+      f.sessionEnd('2026-11-09T11:30:00.000Z', { reason: 'hop', ...a(2) }),
+      f.sessionStart('2026-11-09T11:30:10.000Z', a(3)),
+      f.heartbeat('2026-11-09T11:59:00.000Z', a(3)),
+      f.sessionStart('2026-11-09T08:00:00.000Z', { displayName: 'Gamma', ...c }),
+      f.sessionEnd('2026-11-09T08:30:00.000Z', { reason: 'client_closed', ...c }),
+      f.xpSnapshot('2026-11-09T09:00:00.000Z', { SLAYER: 100 }, { accountHash: HASH_B }),
+    ];
+  }
+
+  async function latestByHash() {
+    const ids = await idsByHash();
+    const { accounts: list } = await get('/api/v1/accounts', accountsResponseSchema);
+    const of = (id: string) => list.find((account) => String(account.id) === id)?.latestSession;
+    return { a: of(ids.a), b: of(ids.b), c: of(ids.c) };
+  }
+
+  it('gives the newest session of each account by start time, or null without sessions', async () => {
+    start(manySessions());
+    expect(await latestByHash()).toEqual({
+      a: { endedAt: null, endReason: null },
+      b: null,
+      c: { endedAt: '2026-11-09T08:30:00.000Z', endReason: 'client_closed' },
+    });
+  });
+
+  it('follows the newest session as it ends, also when events arrive out of order', async () => {
+    // One factory, so the extra end gets an event ID of its own.
+    const f = eventFactory();
+    const events = manySessions(f);
+    start([...events.slice(6), ...events.slice(0, 6)]);
+    expect((await latestByHash()).a).toEqual({ endedAt: null, endReason: null });
+
+    await app?.close();
+    start([...events, f.sessionEnd('2026-11-09T11:59:30.000Z', { reason: 'logout', ...a(3) })]);
+    expect((await latestByHash()).a).toEqual({
+      endedAt: '2026-11-09T11:59:30.000Z',
+      endReason: 'logout',
+    });
+
+    await app?.close();
+    start([...events, f.sessionEnd('2026-11-09T11:59:30.000Z', { reason: 'hop', ...a(3) })]);
+    expect((await latestByHash()).a).toEqual({
+      endedAt: '2026-11-09T11:59:30.000Z',
+      endReason: 'hop',
+    });
+  });
+
+  it('is the same after a full rebuild of the derived tables', async () => {
+    start(manySessions());
+    const before = await get('/api/v1/accounts', accountsResponseSchema);
+    const rebuilt = runRebuild(manySessions());
+    expect(rebuilt.failed).toEqual([]);
+    await app?.close();
+    app = buildApp({
+      db: rebuilt.database,
+      config: testConfig({ TZ }),
+      dashboard: { now: () => new Date('2026-11-09T12:00:00.000Z') },
+    });
+    run = rebuilt;
+    expect(await get('/api/v1/accounts', accountsResponseSchema)).toEqual(before);
   });
 });

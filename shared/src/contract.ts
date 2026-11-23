@@ -6,7 +6,7 @@
  * is only accepted by servers on the new version. The server reports this
  * version in `GET /ingest/verify`, and the contract package is tagged with it.
  */
-export const CONTRACT_VERSION = '1.41.0';
+export const CONTRACT_VERSION = '1.42.0';
 
 /** Value of `schemaVersion` in every event. Changes only on breaking event changes. */
 export const EVENT_SCHEMA_VERSION = 1;

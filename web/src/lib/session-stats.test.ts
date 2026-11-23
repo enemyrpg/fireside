@@ -1,7 +1,13 @@
 import type { SessionDetailResponse } from '@fireside/shared';
 import { describe, expect, it } from 'vitest';
 import detailFixture from '../../../shared/fixtures/api/session-detail-response/valid/session.json';
-import { MIN_RATE_SECONDS, perHour, sessionNumbers, shouldPollSession } from './session-stats';
+import {
+  isSessionLive,
+  MIN_RATE_SECONDS,
+  perHour,
+  sessionNumbers,
+  shouldPollSession,
+} from './session-stats';
 
 const DETAIL = detailFixture as SessionDetailResponse;
 
@@ -69,6 +75,29 @@ describe('sessionNumbers', () => {
       session: { ...detail.session, durationSeconds: 60, activeSeconds: 60, afkSeconds: 0 },
     };
     expect(sessionNumbers(short)).toMatchObject({ xpPerHour: null, gpPerHour: null });
+  });
+});
+
+describe('isSessionLive', () => {
+  const ended = Date.parse('2026-11-08T20:00:00.000Z');
+  const end = (endReason: 'logout' | 'hop' | 'timeout') => ({
+    endedAt: '2026-11-08T20:00:00.000Z',
+    endReason,
+  });
+
+  it('is live while open', () => {
+    expect(isSessionLive({ endedAt: null, endReason: null }, ended)).toBe(true);
+  });
+
+  it('is not live after a logout or a timeout', () => {
+    expect(isSessionLive(end('logout'), ended + 1000)).toBe(false);
+    expect(isSessionLive(end('timeout'), ended + 1000)).toBe(false);
+  });
+
+  it('is live under 2 minutes after a hop', () => {
+    expect(isSessionLive(end('hop'), ended + 60_000)).toBe(true);
+    expect(isSessionLive(end('hop'), ended + 120_000)).toBe(false);
+    expect(isSessionLive(end('hop'), ended + 180_000)).toBe(false);
   });
 });
 

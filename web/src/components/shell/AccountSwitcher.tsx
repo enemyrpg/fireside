@@ -12,7 +12,14 @@ import { useAccounts } from '@/api/hooks';
 import { formatAccountType, formatInt } from '@/format';
 import { useFormat } from '@/hooks/useFormat';
 import { useNow } from '@/hooks/useNow';
-import { accountColor, accountName, isOnline, parseScope, switchAccountPath } from '@/lib/accounts';
+import {
+  accountColor,
+  accountName,
+  anyOnline,
+  isOnline,
+  parseScope,
+  switchAccountPath,
+} from '@/lib/accounts';
 import { cn } from '@/lib/utils';
 import { pageHref, PAGES } from '@/pages/registry';
 import { useCurrentPage } from '@/routing/current-page';
@@ -33,7 +40,8 @@ function accountDetails(account: AccountSummary): string {
  * its query string.
  */
 export function AccountSwitcher({ scope }: { scope: AccountScope }) {
-  const accounts = useAccounts().data?.accounts ?? [];
+  // Polls while an account shows as online, so a logout shows within one poll.
+  const accounts = useAccounts({ live: anyOnline }).data?.accounts ?? [];
   const sorted = [...accounts].sort((a, b) => a.id - b.id);
   const format = useFormat();
   const navigate = useNavigate();

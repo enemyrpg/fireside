@@ -2,6 +2,7 @@ import type { AccountSummary, FeedEntry, Session } from '@fireside/shared';
 import { describe, expect, it } from 'vitest';
 import {
   FEED_FILTERS,
+  hasLiveSession,
   hasOpenSession,
   latestFeed,
   onlineLine,
@@ -22,6 +23,7 @@ function account(id: number, name: string, lastSeenAt: string): AccountSummary {
     lastSeenAt,
     totalLevel: null,
     totalXp: null,
+    latestSession: { endedAt: null, endReason: null },
   };
 }
 
@@ -43,6 +45,26 @@ describe('pickSession', () => {
     expect(hasOpenSession([closed('a'), open('b')])).toBe(true);
     expect(hasOpenSession([closed('a')])).toBe(false);
     expect(hasOpenSession([])).toBe(false);
+  });
+});
+
+describe('hasLiveSession', () => {
+  const ended = (endReason: Session['endReason'], minutesAgo: number) => ({
+    endedAt: new Date(NOW - minutesAgo * 60_000).toISOString(),
+    endReason,
+  });
+
+  it('is live with an open session, or a hop under 2 minutes ago', () => {
+    expect(hasLiveSession([ended('logout', 1), { endedAt: null, endReason: null }], NOW)).toBe(
+      true,
+    );
+    expect(hasLiveSession([ended('hop', 1)], NOW)).toBe(true);
+  });
+
+  it('is not live after a logout, an old hop or without sessions', () => {
+    expect(hasLiveSession([ended('logout', 0.5)], NOW)).toBe(false);
+    expect(hasLiveSession([ended('hop', 3)], NOW)).toBe(false);
+    expect(hasLiveSession([], NOW)).toBe(false);
   });
 });
 
@@ -78,6 +100,16 @@ describe('onlineLine', () => {
         relative,
       }),
     ).toBe('Seed Main, Seed Iron and Seed Alt are online');
+  });
+
+  it('is not online after a logout, even with a recent heartbeat', () => {
+    const loggedOut = {
+      ...main,
+      latestSession: { endedAt: ONLINE, endReason: 'logout' as const },
+    };
+    expect(
+      onlineLine({ accounts: [loggedOut], all: false, sessions: [], nowMs: NOW, relative }),
+    ).toBe(`Offline · last played ${ONLINE}`);
   });
 
   it('says when you last played when nobody is online', () => {

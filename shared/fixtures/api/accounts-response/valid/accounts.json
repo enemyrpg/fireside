@@ -7,7 +7,11 @@
       "firstSeenAt": "2026-11-01T18:00:00.000Z",
       "lastSeenAt": "2026-11-08T21:00:00.000Z",
       "totalLevel": 1850,
-      "totalXp": 123456789
+      "totalXp": 123456789,
+      "latestSession": {
+        "endedAt": null,
+        "endReason": null
+      }
     },
     {
       "id": 2,
@@ -16,7 +20,11 @@
       "firstSeenAt": "2026-11-01T18:00:00.000Z",
       "lastSeenAt": "2026-11-08T21:00:00.000Z",
       "totalLevel": null,
-      "totalXp": null
+      "totalXp": null,
+      "latestSession": {
+        "endedAt": "2026-11-08T21:00:00.000Z",
+        "endReason": "logout"
+      }
     }
   ]
 }
