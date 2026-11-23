@@ -6,3 +6,9 @@ packages:
 allowBuilds:
   esbuild: true
   better-sqlite3: true
+# Dependabot flags esbuild < 0.25 (dev-server request issue). It only comes in
+# through drizzle-kit -> @esbuild-kit/esm-loader -> @esbuild-kit/core-utils,
+# which the bundled drizzle-kit CLI never loads. Remove this override once we
+# move to a stable drizzle-kit that no longer depends on @esbuild-kit.
+overrides:
+  '@esbuild-kit/core-utils>esbuild': ^0.25.12
