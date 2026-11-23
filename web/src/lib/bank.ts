@@ -1,9 +1,12 @@
 import {
   addCapped,
   bankTabDisplayOrder,
+  comparePriceMovers,
   isBankFiller,
   MAIN_BANK_TAB,
   MAX_INVENTORY_ITEMS,
+  priceMoverChange,
+  sumPriceChanges,
   type AccountBank,
   type AccountPotionStorage,
   type BankHistoryDay,
@@ -372,6 +375,40 @@ export function moverRatio(item: Pick<PriceMoverItem, 'priceEach' | 'previousPri
 /** Key of a row: an item can be listed once as an item and once as a potion. */
 export function moverKey(item: Pick<PriceMoverItem, 'kind' | 'itemId'>): string {
   return `${item.kind}:${String(item.itemId)}`;
+}
+
+/**
+ * Price movers of the tab shown. The API sums everything held (bank,
+ * inventory, equipment and potion storage) and knows no tabs, so for a tab
+ * the items are counted again from its slots (placeholders and fillers hold
+ * nothing) at the period's prices, by the same rules as the server: zero
+ * changes left out, sorted and summed with the contract's own helpers. Potion
+ * storage is never in a tab. `all` is the response as it is.
+ */
+export function moversForTab(
+  period: PriceMoverPeriodResult,
+  sections: readonly BankSection[],
+  tab: TabChoice,
+): PriceMoverPeriodResult {
+  if (tab === 'all') return period;
+  const quantities = new Map<number, number>();
+  for (const section of sectionsOf(sections, tab)) {
+    for (const item of section.items) {
+      if (slotKind(item) !== 'item') continue;
+      quantities.set(item.itemId, addCapped(quantities.get(item.itemId) ?? 0, item.quantity));
+    }
+  }
+  const items: PriceMoverItem[] = [];
+  for (const mover of period.items) {
+    if (mover.kind !== 'ITEM') continue;
+    const quantity = quantities.get(mover.itemId);
+    if (quantity === undefined || quantity === 0) continue;
+    const held = { ...mover, quantity };
+    const change = priceMoverChange(held);
+    if (change !== 0) items.push({ ...held, change });
+  }
+  items.sort(comparePriceMovers);
+  return { ...period, change: sumPriceChanges(items), items };
 }
 
 // --- Net worth ----------------------------------------------------------------

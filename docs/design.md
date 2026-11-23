@@ -217,6 +217,12 @@ fillers), Carried and Potion storage, and value over time, most valuable,
 price movers and value by tab. On a phone these are sub-tabs. Today's GE prices
 only apply to what exists now; history keeps the prices from then.
 
+Most valuable and Price movers follow the chosen tab, and their subtitle names
+it ("Tab 3 · GE"). For a tab, Price movers count only that tab's items (no
+placeholders) and recompute the sum and the order. With all tabs, Price movers
+are called "Everything held", because they also cover inventory, equipment and
+potion storage; Most valuable stays "All tabs".
+
 ### All accounts
 
 Pages that belong to one account (Bank, Quests & diaries, Collection log) show

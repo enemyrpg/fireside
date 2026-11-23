@@ -98,3 +98,47 @@ export function cashValue(items: Iterable<{ itemId: number; quantity: number }>)
 export function potionValue(price: number, doses: number, itemDoses: number): number {
   return Math.min(Math.floor((price * doses) / itemDoses), MAX_VALUE);
 }
+
+// --- Price movers -----------------------------------------------------------
+// Here and not next to their schema, so the dashboard can recount price
+// movers for one bank tab without bundling Zod.
+
+/** Value at `priceEach` minus value at `previousPriceEach`, by the bank's own value rules. */
+export function priceMoverChange(
+  item:
+    | { kind: 'ITEM'; quantity: number; priceEach: number; previousPriceEach: number }
+    | {
+        kind: 'POTION';
+        doses: number;
+        itemDoses: number;
+        priceEach: number;
+        previousPriceEach: number;
+      },
+): number {
+  return item.kind === 'ITEM'
+    ? itemValue(item.quantity, item.priceEach) - itemValue(item.quantity, item.previousPriceEach)
+    : potionValue(item.priceEach, item.doses, item.itemDoses) -
+        potionValue(item.previousPriceEach, item.doses, item.itemDoses);
+}
+
+/**
+ * Sum of the changes, kept inside ±(2^53 − 1). Positive and negative parts
+ * are summed apart (each capped), so the result does not depend on the order.
+ */
+export function sumPriceChanges(items: readonly { change: number }[]): number {
+  let up = 0;
+  let down = 0;
+  for (const { change } of items) {
+    if (change > 0) up = addCapped(up, change);
+    else down = addCapped(down, -change);
+  }
+  return up - down;
+}
+
+/** Largest gain first, then item ID, then `ITEM` before `POTION`. */
+export function comparePriceMovers(
+  a: { change: number; itemId: number; kind: string },
+  b: { change: number; itemId: number; kind: string },
+): number {
+  return b.change - a.change || a.itemId - b.itemId || (a.kind < b.kind ? -1 : +(a.kind > b.kind));
+}

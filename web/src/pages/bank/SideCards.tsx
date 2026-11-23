@@ -202,11 +202,28 @@ interface MostValuableProps {
   showScope: boolean;
 }
 
-/** "All tabs · GE": what the list covers. */
-function mostValuableScope({ mode, tab, showScope }: Omit<MostValuableProps, 'sections'>) {
+/** The all-scope of Most valuable: the bank's tabs. */
+const ALL_TABS = 'All tabs';
+/**
+ * The all-scope of Price movers: the API's sum also covers inventory,
+ * equipment and potion storage, so it is more than "All tabs".
+ */
+const EVERYTHING_HELD = 'Everything held';
+
+/** "Tab 3 · GE": what a list covers. Only the value mode for a bank without tabs. */
+function scopeText(
+  allLabel: string,
+  { mode, tab, showScope }: { mode: ValueMode; tab: TabChoice; showScope: boolean },
+) {
   const label = VALUE_MODE_LABEL[mode];
-  return showScope ? `${tab === 'all' ? 'All tabs' : formatBankTab(tab)} · ${label}` : label;
+  return showScope ? `${tab === 'all' ? allLabel : formatBankTab(tab)} · ${label}` : label;
 }
+
+const mostValuableScope = (props: Omit<MostValuableProps, 'sections'>) =>
+  scopeText(ALL_TABS, props);
+
+/** Price movers are changes in GE prices: always GE. */
+const moversScope = (view: PriceMoversView) => scopeText(EVERYTHING_HELD, { ...view, mode: 'ge' });
 
 function MostValuableList({ sections, mode, tab }: Omit<MostValuableProps, 'showScope'>) {
   const items = mostValuable(
@@ -257,7 +274,12 @@ export function MostValuableCard(props: MostValuableProps) {
 export interface PriceMoversView {
   /** The periods the server has price history for, shortest first. Never empty. */
   periods: readonly PriceMoverPeriodResult[];
+  /** The period shown, narrowed to `tab` (`moversForTab`). */
   shown: PriceMoverPeriodResult;
+  /** The bank tab shown, for the subtitle. */
+  tab: TabChoice;
+  /** Name the tab in the subtitle. Off for a bank without tabs. */
+  showScope: boolean;
   onPeriod: (period: PriceMoverPeriod) => void;
   /** "Show all": page state, kept by the page across the PC breakpoint. */
   expanded: boolean;
@@ -453,7 +475,14 @@ function MoverPeriods({ view, block = false }: { view: PriceMoversView; block?: 
 export function PriceMoversCard({ view }: { view: PriceMoversView }) {
   return (
     <Card className="flex flex-col gap-3">
-      <CardHeader title="Price movers" className="mb-0" />
+      <CardHeader
+        title={
+          <>
+            Price movers <Subtitle>{moversScope(view)}</Subtitle>
+          </>
+        }
+        className="mb-0"
+      />
       {view.periods.length > 1 && <MoverPeriods view={view} block />}
       <PriceMoversBody view={view} desktop={false} />
     </Card>
@@ -497,7 +526,10 @@ export function RankingsCard({
           itemClassName="desk:h-7"
         />
         {choice === 'movers' ? (
-          movers.periods.length > 1 && <MoverPeriods view={movers} />
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+            <span className="text-xs text-text-3">{moversScope(movers)}</span>
+            {movers.periods.length > 1 && <MoverPeriods view={movers} />}
+          </div>
         ) : (
           <span className="text-xs text-text-3">{mostValuableScope(valuable)}</span>
         )}
