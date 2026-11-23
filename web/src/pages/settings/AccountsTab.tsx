@@ -12,7 +12,7 @@ import { formatAccountType, formatInt } from '@/format';
 import { useDelayedFlag } from '@/hooks/useDelayedFlag';
 import { useFormat } from '@/hooks/useFormat';
 import { useNow } from '@/hooks/useNow';
-import { accountColors, accountName, isOnline } from '@/lib/accounts';
+import { accountColors, accountName, anyOnline, isOnline } from '@/lib/accounts';
 import { CollectionLogSource } from './CollectionLogSource';
 import { SettingsLayout } from './SettingsLayout';
 
@@ -113,7 +113,8 @@ function AccountCard({ account, color }: { account: AccountSummary; color: strin
 }
 
 function AccountList() {
-  const accounts = useAccounts();
+  // Polls while an account shows as online, so a logout shows within one poll.
+  const accounts = useAccounts({ live: anyOnline });
   if (accounts.isError) {
     return (
       <ErrorState

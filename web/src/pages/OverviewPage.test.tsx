@@ -296,6 +296,33 @@ describe('Home', () => {
     expect(pollInterval(queryClient, ['session', OPEN.id])).toBe(LIVE_POLL_MS);
   });
 
+  it('keeps polling across a world hop that falls between two polls', async () => {
+    // The newest session ended by a hop a minute ago; the next part is not in yet.
+    const hop: Session = {
+      ...OPEN,
+      endedAt: '2026-11-11T11:59:00.000Z',
+      endReason: 'hop',
+      summary: CLOSED.summary,
+    };
+    mockOverview('1', {
+      sessions: { items: [hop, CLOSED], nextCursor: null },
+      details: [{ ...OPEN_DETAIL, session: hop }],
+    });
+    const { queryClient } = renderApp('/1');
+    await latest();
+    await waitFor(() => {
+      expect(pollInterval(queryClient, ['sessions', 1])).toBe(LIVE_POLL_MS);
+    });
+    for (const key of [['accounts'], ['feed', 1], ['gains', 1]]) {
+      await waitFor(() => {
+        expect([key, pollInterval(queryClient, key)]).toEqual([key, LIVE_POLL_MS]);
+      });
+    }
+    // 2 minutes after the hop with no next part, the list stops polling.
+    vi.setSystemTime(new Date('2026-11-11T12:01:00.000Z'));
+    expect(pollInterval(queryClient, ['sessions', 1])).toBe(false);
+  });
+
   it('pins the live session under Sessions, but not under Drops', async () => {
     mockOverview('1', { sessions: SESSIONS, details: [OPEN_DETAIL] });
     const { router } = renderApp('/1?show=drops');

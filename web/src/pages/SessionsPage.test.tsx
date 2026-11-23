@@ -511,6 +511,35 @@ describe('Sessions page on PC: list and selected session', () => {
     expect(options.refetchIntervalInBackground).toBe(false);
   });
 
+  it('polls the list while a session is live, also between the parts of a hop', async () => {
+    // Only a hop that ended a minute ago: the next part has not arrived yet.
+    const hop = session(21, '2026-11-10T11:00:00.000Z', '2026-11-10T11:59:00.000Z', {
+      endReason: 'hop',
+    });
+    const answer = { items: [hop, OLD], nextCursor: null };
+    mockApi({ '/api/v1/accounts/all/sessions': () => json(answer) });
+    const { queryClient } = renderApp('/all/activity/sessions');
+    await screen.findByRole('region', { name: 'Tue 10 Nov' });
+    expect(listInterval(queryClient)).toBe(LIVE_POLL_MS);
+    // 2 minutes after the hop without a next part: it stops.
+    vi.setSystemTime(new Date('2026-11-10T12:01:00.000Z'));
+    expect(listInterval(queryClient)).toBe(false);
+  });
+
+  it('polls the list while a session is open, and not without one', async () => {
+    mockApi({ '/api/v1/accounts/all/sessions': sessionsAnswer, ...detailAnswers() });
+    const { queryClient } = renderApp('/all/activity/sessions');
+    await screen.findByRole('region', { name: 'Sat 7 Nov' });
+    expect(listInterval(queryClient)).toBe(LIVE_POLL_MS);
+  });
+
+  it('does not poll a list with only ended sessions', async () => {
+    mockApi({ '/api/v1/accounts/all/sessions': () => json({ items: [OLD], nextCursor: null }) });
+    const { queryClient } = renderApp('/all/activity/sessions');
+    await screen.findByRole('region', { name: 'Sun 1 Nov' });
+    expect(listInterval(queryClient)).toBe(false);
+  });
+
   it('unfolds a short run that holds the selected session', async () => {
     const a = session(11, '2026-11-08T09:00:00.000Z', '2026-11-08T09:03:00.000Z', {
       summary: EMPTY_SUMMARY,
@@ -657,4 +686,16 @@ function pollingOf(queryClient: QueryClient, sessionId: string) {
   );
   expect(observer).toBeDefined();
   return { query, options: observer?.options as unknown as PollingOptions };
+}
+
+/** The polling interval of the sessions list right now (`false` = none). */
+function listInterval(queryClient: QueryClient): number | false {
+  // Not exact: the key also holds the page size.
+  const query = queryClient.getQueryCache().find({ queryKey: ['sessions', 'all'], exact: false });
+  const observer = query?.observers.find(
+    (item) => typeof item.options.refetchInterval === 'function',
+  );
+  if (!observer) return false;
+  const options = observer.options as unknown as PollingOptions;
+  return options.refetchInterval(query);
 }

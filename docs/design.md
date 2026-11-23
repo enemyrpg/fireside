@@ -28,6 +28,7 @@ for: tokens in [`web/src/theme/themes.css`](../web/src/theme/themes.css) and
 - [Shared patterns](#shared-patterns)
 - [Components](#components)
 - [Data and fetching](#data-and-fetching)
+- [Online](#online)
 - [Empty states](#empty-states)
 - [Loading](#loading)
 - [Errors](#errors)
@@ -128,7 +129,7 @@ rules in `web/src/lib/` have the details, with tests.
 ### Home
 
 The "This week" stat strip (play time with bars per day, XP with the number of
-skills, loot, kills) and a line on who is online. Below it "Latest" on the
+skills, loot, kills) and a line on who is online ([Online](#online)). Below it "Latest" on the
 left: a feed of sessions, drops over 1M, new collection log items, level-ups
 and pets, per local day, with a filter in `?show=`, six rows and then a link to
 the page with the rest. An ongoing session is pinned on top with a Live badge.
@@ -143,7 +144,7 @@ plugin, log in to the game).
 Sessions grouped by local day with a day total, 20 per page with "Load more".
 World hops less than 2 minutes apart are one row that opens the first part.
 Consecutive short sessions fold into one dashed row. A badge shows new
-collection log items.
+collection log items. Polls while a session is live, like Home.
 
 ### Session detail
 
@@ -459,27 +460,27 @@ the logo comes from `BRANDING`.
 
 The building blocks are in `web/src/components/`. The main ones:
 
-| Component                                                                    | What it is                                                                                                             |
-| ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `AppShell`, `TopBar`, `BottomTabBar`, `PageHeader`, `SubTabs`                | The shell and navigation (above). `AppShell` waits for `health` before showing a page                                  |
-| `Footer`                                                                     | The Jagex disclaimer from `BRANDING`, server and contract version, About and GitHub links                              |
-| `AccountSwitcher`                                                            | "All accounts" and each account with its color, type, total level and Online (seen in the last 3 minutes) or last seen |
-| `Card`, `CardHeader`, `QueryCard`                                            | Cards with a title on the left and a link or controls on the right ("Weekly →")                                        |
-| `StatStrip`, `Delta`                                                         | The stat strip; a neutral ▲/▼ with duration and percent                                                                |
-| `HBarList`, `ShowAllButton`                                                  | Name, bar and value, with the six-row rule                                                                             |
-| `DataTable`                                                                  | shadcn Table: right-aligned numbers, tabular digits, row hover                                                         |
-| `StackedBars`, `XpLine`, `ValueLine`, `ValueBars`, `Sparkline`               | Charts: active/AFK, one series over time, bars, a line without axes                                                    |
-| `HourHeatmap`, `ActivityCalendar`, `WeekDayBars`                             | Heat grids and the bars per weekday                                                                                    |
-| `SessionTimeline`, `SessionRow`, `ShortSessionsRow`, `HopChainBar`           | Sessions                                                                                                               |
-| `ItemIcon`, `SkillIcon`, `BossIcon`, `ItemGrid`, `ItemSlot`, `EquipmentGrid` | Icons and the game's own grids                                                                                         |
-| `Gp`                                                                         | A compact gp value with the exact value in a tooltip                                                                   |
-| `Badge`, `LiveBadge`                                                         | Account type, Live, Revoked, New, Unconfirmed, Manual …                                                                |
-| `EmptyState`, `ErrorState`, `CardSkeleton`                                   | The states below                                                                                                       |
-| `ConfirmDialog`, `EditDropDialog`, `AddDropDialog`                           | Dialogs and sheets (`web/src/components/ui/sheet.tsx`)                                                                 |
-| `SecretReveal`, `CopyButton`                                                 | A secret shown once, with Copy                                                                                         |
-| `StackedColumns`                                                             | Two columns that stack on their own (Weekly, Raids); one column below 1100 px                                          |
-| `AccountCards`                                                               | One link card per account for `all`                                                                                    |
-| `QrCode`                                                                     | The two-factor QR code: one SVG path, always black on white (the one exception to the tokens)                          |
+| Component                                                                    | What it is                                                                                                        |
+| ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `AppShell`, `TopBar`, `BottomTabBar`, `PageHeader`, `SubTabs`                | The shell and navigation (above). `AppShell` waits for `health` before showing a page                             |
+| `Footer`                                                                     | The Jagex disclaimer from `BRANDING`, server and contract version, About and GitHub links                         |
+| `AccountSwitcher`                                                            | "All accounts" and each account with its color, type, total level and Online (see [Online](#online)) or last seen |
+| `Card`, `CardHeader`, `QueryCard`                                            | Cards with a title on the left and a link or controls on the right ("Weekly →")                                   |
+| `StatStrip`, `Delta`                                                         | The stat strip; a neutral ▲/▼ with duration and percent                                                           |
+| `HBarList`, `ShowAllButton`                                                  | Name, bar and value, with the six-row rule                                                                        |
+| `DataTable`                                                                  | shadcn Table: right-aligned numbers, tabular digits, row hover                                                    |
+| `StackedBars`, `XpLine`, `ValueLine`, `ValueBars`, `Sparkline`               | Charts: active/AFK, one series over time, bars, a line without axes                                               |
+| `HourHeatmap`, `ActivityCalendar`, `WeekDayBars`                             | Heat grids and the bars per weekday                                                                               |
+| `SessionTimeline`, `SessionRow`, `ShortSessionsRow`, `HopChainBar`           | Sessions                                                                                                          |
+| `ItemIcon`, `SkillIcon`, `BossIcon`, `ItemGrid`, `ItemSlot`, `EquipmentGrid` | Icons and the game's own grids                                                                                    |
+| `Gp`                                                                         | A compact gp value with the exact value in a tooltip                                                              |
+| `Badge`, `LiveBadge`                                                         | Account type, Live, Revoked, New, Unconfirmed, Manual …                                                           |
+| `EmptyState`, `ErrorState`, `CardSkeleton`                                   | The states below                                                                                                  |
+| `ConfirmDialog`, `EditDropDialog`, `AddDropDialog`                           | Dialogs and sheets (`web/src/components/ui/sheet.tsx`)                                                            |
+| `SecretReveal`, `CopyButton`                                                 | A secret shown once, with Copy                                                                                    |
+| `StackedColumns`                                                             | Two columns that stack on their own (Weekly, Raids); one column below 1100 px                                     |
+| `AccountCards`                                                               | One link card per account for `all`                                                                               |
+| `QrCode`                                                                     | The two-factor QR code: one SVG path, always black on white (the one exception to the tokens)                     |
 
 ## Data and fetching
 
@@ -490,15 +491,34 @@ The building blocks are in `web/src/components/`. The main ones:
   stays (`keepPreviousData`) with a skeleton only where there is none. Pages
   where one account's numbers must never show under another's (Bank) don't
   keep previous data across accounts.
-- **Polling only for an ongoing session:** while one is open, Home and Session
-  detail refetch every 30 s; paused when the tab is hidden. No polling
-  otherwise.
+- **Polling only for an ongoing session:** while a session is live (see
+  [Online](#online)), Home, Sessions and Session detail refetch every 30 s;
+  paused when the tab is hidden. The accounts list (switcher, Home, Settings →
+  OSRS accounts) refetches every 30 s while any account shows as Online, so a
+  logout shows as offline within one poll. No polling otherwise.
 - Responses are validated with Zod in development and tests only
   (`web/src/api/validate.ts`). Zod is kept out of the production bundle; the
   build fails if it gets back in.
 - The client only talks to its own origin (`web/src/api/client.ts`).
 - An unknown account ID in the URL gives a toast ("That account doesn't exist")
   and goes to `/all`.
+
+## Online
+
+One rule for every "Online" (the account switcher, the line on Home, the
+account chips, Settings → OSRS accounts), in `isOnline`
+(`web/src/lib/accounts.ts`). An account is Online when both hold:
+
+- its last heartbeat is less than 3 minutes old, and
+- its newest session (`latestSession` in `GET /accounts`) is **live**: open,
+  or ended by a world hop less than 2 minutes ago (the window for merging
+  hops), so a hop never flickers to offline.
+
+A logout or a closed client is offline at once. A killed client leaves its
+session open, so it stays Online until the 3 minutes pass. The server sends
+only facts (`endedAt`, `endReason`); the dashboard applies the rule with its
+own clock. The same "live" test (`isSessionLive`) decides when Home, Sessions
+and Session detail poll.
 
 ## Empty states
 

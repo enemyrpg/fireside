@@ -42,9 +42,9 @@ import { useFormat } from '@/hooks/useFormat';
 import { useIsDesktop } from '@/hooks/useIsDesktop';
 import { useLocalToday } from '@/hooks/useLocalToday';
 import { useNow } from '@/hooks/useNow';
-import { accountColors, accountName, isOnline } from '@/lib/accounts';
+import { accountColors, accountName, anyOnline, isOnline } from '@/lib/accounts';
 import { calendarRange, daysPlayedLabel } from '@/lib/calendar';
-import { hasOpenSession, onlineLine, OVERVIEW_SESSION_LIMIT, weekDayBars } from '@/lib/overview';
+import { hasLiveSession, onlineLine, OVERVIEW_SESSION_LIMIT, weekDayBars } from '@/lib/overview';
 import { weekDates } from '@/lib/time';
 import { skillsTrained } from './xp/gains-rows';
 import { useAccountScope } from '@/routing/useAccountScope';
@@ -498,8 +498,10 @@ export function OverviewPage() {
   const scope = useAccountScope();
   const sessions = useSessions(scope, { limit: OVERVIEW_SESSION_LIMIT }, { pollWhileOpen: true });
   const list = sessions.data?.pages[0]?.items;
-  const live = list !== undefined && hasOpenSession(list);
-  const accounts = useAccounts({ live });
+  // Live also across a world hop, so the page keeps updating between the parts.
+  const live = list !== undefined && hasLiveSession(list);
+  // While a session is live, and after it until no account shows as online.
+  const accounts = useAccounts({ live: live || anyOnline });
   const all = accounts.data?.accounts;
 
   if (all?.length === 0) return <Welcome />;

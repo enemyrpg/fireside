@@ -1,22 +1,26 @@
-import type { AccountDetailResponse, AccountSummary } from '@fireside/shared';
+import type { AccountDetailResponse, AccountSummary, LatestSession } from '@fireside/shared';
 import { and, asc, desc, eq, sql, type SQL } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/sqlite-core';
 import type { Queryable } from '../db/index.js';
-import { accountNames, accounts, xpSnapshots } from '../db/schema.js';
+import { accountNames, accounts, sessions, xpSnapshots } from '../db/schema.js';
 
 // `GET /accounts` and `GET /accounts/:accountId`. Reads `accounts`,
-// `account_names` and the latest `xp_snapshots` row per account.
+// `account_names`, the latest `xp_snapshots` row and the newest `sessions`
+// row per account.
 //
 // Every lookup here takes the user: a user only ever sees their own accounts,
 // and another user's account ID is not found, the same as an unknown one.
 // Routes resolve `:accountId` with `routes/account-scope.ts`.
 
 const latest = alias(xpSnapshots, 'latest');
+const newest = alias(sessions, 'newest');
 
 /**
  * The user's accounts (narrowed by `where`) with totals from their latest
- * snapshot, in one query: each row joins the snapshot found by an indexed
- * lookup (`taken_at`, `event_id`).
+ * snapshot and the state of their newest session, in one query: each row
+ * joins the snapshot and the session found by an indexed lookup
+ * (`xp_snapshots_account_taken_idx`, `sessions_account_started_idx`), so the
+ * cost does not grow with the number of sessions.
  */
 function summaries(db: Queryable, userId: number, where?: SQL): AccountSummary[] {
   // A query builder (not raw column names) keeps the columns table-qualified.
@@ -26,14 +30,28 @@ function summaries(db: Queryable, userId: number, where?: SQL): AccountSummary[]
     .where(eq(xpSnapshots.accountId, accounts.id))
     .orderBy(desc(xpSnapshots.takenAt), desc(xpSnapshots.eventId))
     .limit(1);
+  const newestId = db
+    .select({ id: sessions.id })
+    .from(sessions)
+    .where(eq(sessions.accountId, accounts.id))
+    .orderBy(desc(sessions.startedAt), desc(sessions.id))
+    .limit(1);
   return db
-    .select({ account: accounts, totalXp: latest.totalXp, totalLevel: latest.totalLevel })
+    .select({
+      account: accounts,
+      totalXp: latest.totalXp,
+      totalLevel: latest.totalLevel,
+      sessionId: newest.id,
+      endedAt: newest.endedAt,
+      endReason: newest.endReason,
+    })
     .from(accounts)
     .leftJoin(latest, eq(latest.id, sql`(${latestId})`))
+    .leftJoin(newest, eq(newest.id, sql`(${newestId})`))
     .where(and(eq(accounts.userId, userId), where))
     .orderBy(asc(accounts.id))
     .all()
-    .map(({ account, totalXp, totalLevel }) => ({
+    .map(({ account, totalXp, totalLevel, sessionId, endedAt, endReason }) => ({
       id: account.id,
       // Both are `null` until the first `session.start`.
       displayName: account.displayName,
@@ -42,6 +60,9 @@ function summaries(db: Queryable, userId: number, where?: SQL): AccountSummary[]
       lastSeenAt: account.lastSeenAt,
       totalLevel,
       totalXp,
+      // Facts only: the dashboard decides "online" with its own clock.
+      latestSession:
+        sessionId === null ? null : { endedAt, endReason: endReason as LatestSession['endReason'] },
     }));
 }
 

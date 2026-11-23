@@ -49,6 +49,12 @@ accounts). The Zod file has the request and response schemas of each group.
 | Users and invites           | `GET /users`, `PATCH`/`DELETE /users/:id`, `POST /users/:id/password-reset`, `POST /users/:id/totp-reset`, `POST /users/:id/keys`, `GET`/`POST /invites`, `DELETE /invites/:id` | admin         | [`users.ts`](../shared/src/schemas/api/users.ts), [`invites.ts`](../shared/src/schemas/api/invites.ts), [`keys.ts`](../shared/src/schemas/api/keys.ts)       |
 | Administration              | `POST /admin/rebuild`, `GET /admin/backups`, `GET /admin/external-sources`, `GET /admin/icons`, `GET /admin/keys`, `DELETE /admin/keys/:id`, `GET`/`PATCH /admin/settings`      | admin         | [`admin.ts`](../shared/src/schemas/api/admin.ts), [`settings.ts`](../shared/src/schemas/api/settings.ts), [`keys.ts`](../shared/src/schemas/api/keys.ts)     |
 
+Each account in `GET /accounts` and `GET /accounts/:accountId` has
+`latestSession`: the `endedAt` and `endReason` of its newest session by start
+time (both `null` while it is open), or `null` without sessions (since 1.42.0).
+These are facts; the dashboard decides "Online" from them with its own clock
+(see [Online](design.md#online)).
+
 The routes live in [`server/src/routes/`](../server/src/routes/), one file per
 group. The shared error and pagination parts are in
 [`common.ts`](../shared/src/schemas/api/common.ts).

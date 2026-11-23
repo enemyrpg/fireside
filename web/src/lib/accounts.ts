@@ -1,5 +1,6 @@
 import type { AccountScope, AccountSummary } from '@fireside/shared';
 import { formatAccountType } from '@/format';
+import { isSessionLive } from './session-stats';
 import { readStorage, writeStorage } from './storage';
 
 // Account helpers shared by the shell and pages.
@@ -85,11 +86,38 @@ export function accountCardInfo(
   };
 }
 
-/** How long after the last heartbeat (sent every 60 s) an account still counts as online. */
+/**
+ * How long after the last heartbeat (sent every 60 s) an account can still
+ * count as online. Covers a killed client, whose session stays open until the
+ * server's timeout closes it.
+ */
 export const ONLINE_WINDOW_MS = 3 * 60_000;
 
-export function isOnline(account: Pick<AccountSummary, 'lastSeenAt'>, now: number): boolean {
-  return now - Date.parse(account.lastSeenAt) < ONLINE_WINDOW_MS;
+/**
+ * Online: a heartbeat within `ONLINE_WINDOW_MS`, and the newest session still
+ * live (open, or ended by a hop under 2 minutes ago; `isSessionLive`). A
+ * logout shows as offline as soon as the accounts list has the ended session.
+ * See "Online" in docs/design.md.
+ */
+export function isOnline(
+  account: Pick<AccountSummary, 'lastSeenAt' | 'latestSession'>,
+  now: number,
+): boolean {
+  return (
+    now - Date.parse(account.lastSeenAt) < ONLINE_WINDOW_MS &&
+    account.latestSession !== null &&
+    isSessionLive(account.latestSession, now)
+  );
+}
+
+/**
+ * For `useAccounts({ live })`: keep polling while any account shows as online,
+ * so a logout turns into offline within one poll. Read with the current clock
+ * after every fetch.
+ */
+export function anyOnline(data: { accounts: readonly AccountSummary[] } | undefined): boolean {
+  const now = Date.now();
+  return (data?.accounts ?? []).some((account) => isOnline(account, now));
 }
 
 export function readLastAccount(): AccountScope | null {

@@ -6,6 +6,10 @@
   "lastSeenAt": "2026-11-08T21:00:00.000Z",
   "totalLevel": 1850,
   "totalXp": 123456789,
+  "latestSession": {
+    "endedAt": "2026-11-08T21:00:00.000Z",
+    "endReason": "hop"
+  },
   "names": [
     {
       "displayName": "OldName",

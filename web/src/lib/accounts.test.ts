@@ -82,10 +82,55 @@ describe('account display', () => {
     expect(accountName({ displayName: 'Test Main' })).toBe('Test Main');
   });
 
-  it('is online within 3 minutes of the last heartbeat', () => {
-    const now = Date.parse('2026-11-10T12:00:00.000Z');
-    expect(isOnline({ lastSeenAt: '2026-11-10T11:58:30.000Z' }, now)).toBe(true);
-    expect(isOnline({ lastSeenAt: '2026-11-10T11:57:00.000Z' }, now)).toBe(false);
+  const now = Date.parse('2026-11-10T12:00:00.000Z');
+  const recent = '2026-11-10T11:59:30.000Z';
+  const open = { endedAt: null, endReason: null };
+  const endedAgo = (endReason: 'logout' | 'hop' | 'client_closed', ms: number) => ({
+    endedAt: new Date(now - ms).toISOString(),
+    endReason,
+  });
+
+  it('is online with an open session and a heartbeat within 3 minutes', () => {
+    expect(isOnline({ lastSeenAt: '2026-11-10T11:58:30.000Z', latestSession: open }, now)).toBe(
+      true,
+    );
+  });
+
+  it('stays online with a killed client (session open) only until the window passes', () => {
+    expect(isOnline({ lastSeenAt: '2026-11-10T11:57:00.000Z', latestSession: open }, now)).toBe(
+      false,
+    );
+    expect(isOnline({ lastSeenAt: '2026-11-10T11:56:00.000Z', latestSession: open }, now)).toBe(
+      false,
+    );
+  });
+
+  it('is offline as soon as the newest session ended by logout or closing the client', () => {
+    expect(isOnline({ lastSeenAt: recent, latestSession: endedAgo('logout', 10_000) }, now)).toBe(
+      false,
+    );
+    expect(
+      isOnline({ lastSeenAt: recent, latestSession: endedAgo('client_closed', 10_000) }, now),
+    ).toBe(false);
+  });
+
+  it('stays online across a hop for under 2 minutes', () => {
+    expect(isOnline({ lastSeenAt: recent, latestSession: endedAgo('hop', 60_000) }, now)).toBe(
+      true,
+    );
+    expect(isOnline({ lastSeenAt: recent, latestSession: endedAgo('hop', 119_999) }, now)).toBe(
+      true,
+    );
+    expect(isOnline({ lastSeenAt: recent, latestSession: endedAgo('hop', 120_000) }, now)).toBe(
+      false,
+    );
+    expect(isOnline({ lastSeenAt: recent, latestSession: endedAgo('hop', 150_000) }, now)).toBe(
+      false,
+    );
+  });
+
+  it('is offline without sessions', () => {
+    expect(isOnline({ lastSeenAt: recent, latestSession: null }, now)).toBe(false);
   });
 });
 
