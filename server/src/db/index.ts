@@ -27,7 +27,36 @@ export interface Database {
   db: Db;
   /** The raw connection, for pragmas and tests. */
   sqlite: BetterSqlite3.Database;
+  /** What `OpenDatabaseOptions.upgrade` did, if it ran. */
+  upgrade?: UpgradeReport | undefined;
   close(): void;
+}
+
+/** What an upgrade of the derived data did, for the log. */
+export interface UpgradeReport {
+  /** The projections that were brought up to date. */
+  projections: string[];
+  /** Counts from the upgrade, e.g. `{ sessions: 950 }`. */
+  counts: Record<string, number>;
+  /** SQL names of the tables it may have changed. */
+  tables: string[];
+  /**
+   * Columns it may have changed in other tables: a full rebuild sets
+   * `events.processed_at` again.
+   */
+  columns: Record<string, string[]>;
+  durationMs: number;
+}
+
+/**
+ * Work on the data that must run after migrations, in the same transaction:
+ * projections whose rules changed (projections/versions.ts). Passed in, so
+ * this module needs nothing from the projections.
+ */
+export interface DatabaseUpgrade {
+  /** Whether `run` has work to do. Only reads; works on a database before migrations. */
+  pending: (sqlite: BetterSqlite3.Database) => boolean;
+  run: (db: Db, sqlite: BetterSqlite3.Database) => UpgradeReport;
 }
 
 export interface OpenDatabaseOptions {
@@ -39,6 +68,11 @@ export interface OpenDatabaseOptions {
    * CLI while a server owns the database, which must not migrate under it.
    */
   migrate?: boolean;
+  /**
+   * Runs after migrations in the same transaction when `pending`. With
+   * `migrate: false`, a pending upgrade throws `PendingMigrationsError`.
+   */
+  upgrade?: DatabaseUpgrade;
 }
 
 /** Path of the database file inside `DATA_DIR`. */
@@ -73,7 +107,11 @@ export class ForeignKeyViolationError extends MigrationError {
  */
 export function openDatabase(
   filename: string,
-  { migrationsFolder = MIGRATIONS_DIR, migrate: applyMigrations = true }: OpenDatabaseOptions = {},
+  {
+    migrationsFolder = MIGRATIONS_DIR,
+    migrate: applyMigrations = true,
+    upgrade,
+  }: OpenDatabaseOptions = {},
 ): Database {
   if (filename !== ':memory:') mkdirSync(dirname(filename), { recursive: true });
 
@@ -88,13 +126,16 @@ export function openDatabase(
     // Safe with WAL: a power loss can lose the last commits, never corrupt the file.
     sqlite.pragma('synchronous = NORMAL');
 
-    if (applyMigrations) migrate(sqlite, migrationsFolder);
-    else checkMigrations(sqlite, migrationsFolder);
+    const db = drizzle(sqlite, { schema });
+    let report: UpgradeReport | undefined;
+    if (applyMigrations) report = migrate(sqlite, migrationsFolder, db, upgrade);
+    else checkMigrations(sqlite, migrationsFolder, upgrade);
     sqlite.pragma('foreign_keys = ON');
 
     return {
-      db: drizzle(sqlite, { schema }),
+      db,
       sqlite,
+      upgrade: report,
       close: () => {
         if (sqlite.open) sqlite.close();
       },
@@ -120,7 +161,12 @@ export function openDatabase(
  * When nothing is pending, no write lock is taken, so a long CLI job does not
  * block the server from starting.
  */
-function migrate(sqlite: BetterSqlite3.Database, migrationsFolder: string): void {
+function migrate(
+  sqlite: BetterSqlite3.Database,
+  migrationsFolder: string,
+  db: Db,
+  upgrade: DatabaseUpgrade | undefined,
+): UpgradeReport | undefined {
   const migrations = readMigrationFiles({ migrationsFolder });
 
   // A no-op without a write lock when the table already exists.
@@ -128,14 +174,13 @@ function migrate(sqlite: BetterSqlite3.Database, migrationsFolder: string): void
     `CREATE TABLE IF NOT EXISTS "${MIGRATIONS_TABLE}" ` +
       '(id SERIAL PRIMARY KEY, hash text NOT NULL, created_at numeric)',
   );
-  if (pendingMigrations(sqlite, migrations).length === 0) return;
+  if (pendingMigrations(sqlite, migrations).length === 0 && !upgrade?.pending(sqlite)) return;
 
   sqlite.pragma('foreign_keys = OFF');
-  sqlite
-    .transaction(() => {
+  return sqlite
+    .transaction((): UpgradeReport | undefined => {
       // Another process may have applied them while we waited for the lock.
       const pending = pendingMigrations(sqlite, migrations);
-      if (pending.length === 0) return;
 
       const insert = sqlite.prepare(
         `INSERT INTO "${MIGRATIONS_TABLE}" (hash, created_at) VALUES (?, ?)`,
@@ -144,6 +189,9 @@ function migrate(sqlite: BetterSqlite3.Database, migrationsFolder: string): void
         for (const statement of migration.sql) sqlite.exec(statement);
         insert.run(migration.hash, migration.folderMillis);
       }
+      // Foreign keys are still off here, so nothing cascades: the upgrade
+      // deletes what it replaces itself, and the check below catches the rest.
+      const report = upgrade?.pending(sqlite) ? upgrade.run(db, sqlite) : undefined;
 
       const violations = sqlite.pragma('foreign_key_check') as unknown[];
       if (violations.length > 0) {
@@ -152,12 +200,17 @@ function migrate(sqlite: BetterSqlite3.Database, migrationsFolder: string): void
             JSON.stringify(violations.slice(0, 5)),
         );
       }
+      return report;
     })
     .immediate();
 }
 
 /** Throws `PendingMigrationsError` (or a `MigrationError`) unless the database is up to date. Only reads. */
-function checkMigrations(sqlite: BetterSqlite3.Database, migrationsFolder: string): void {
+function checkMigrations(
+  sqlite: BetterSqlite3.Database,
+  migrationsFolder: string,
+  upgrade: DatabaseUpgrade | undefined,
+): void {
   const migrations = readMigrationFiles({ migrationsFolder });
   const hasTable =
     sqlite
@@ -167,6 +220,11 @@ function checkMigrations(sqlite: BetterSqlite3.Database, migrationsFolder: strin
   if (pending > 0) {
     throw new PendingMigrationsError(
       `The database needs ${String(pending)} migration(s) that have not been applied.`,
+    );
+  }
+  if (upgrade?.pending(sqlite)) {
+    throw new PendingMigrationsError(
+      'The database was built with older projection rules and must be recomputed first.',
     );
   }
 }

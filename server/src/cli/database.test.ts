@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { acquireInstanceLock, InstanceLockedError } from '../backup/lock.js';
 import { migrationsWithExtra, tempDir } from '../backup/testing.js';
 import { databasePath, openDatabase } from '../db/index.js';
+import { projectionUpgrade } from '../projections/versions.js';
 import { CliDataDir } from './database.js';
 import { CliError } from './run.js';
 
@@ -28,7 +29,10 @@ describe('CLI and the instance lock', () => {
     const { dir, remove } = tempDir();
     cleanups.push(remove);
     const dataDir = join(dir, 'data');
-    if (withDatabase) openDatabase(databasePath(dataDir)).close();
+    // As a server leaves it: migrated, with the current projection versions.
+    if (withDatabase) {
+      openDatabase(databasePath(dataDir), { upgrade: projectionUpgrade() }).close();
+    }
     const log: string[] = [];
     const cli = (migrationsFolder?: string) => {
       const claim = new CliDataDir(
@@ -126,5 +130,31 @@ describe('CLI and the instance lock', () => {
       expect(() => claim.open({ create: false })).toThrow(/Stop the server/);
       expect(tableExists(file, 'future_feature')).toBe(false);
     });
+
+    it('refuses a database built with older projection rules', () => {
+      const { dataDir, file, cli } = setup();
+      // As the previous version left it: no projection versions stored.
+      const old = openDatabase(file);
+      old.sqlite.exec('DELETE FROM projection_versions');
+      old.close();
+      serverHoldsLock(dataDir);
+      const claim = cli();
+      expect(() => claim.open({ create: false })).toThrow(/older projection rules/);
+      expect(() => claim.open({ create: false })).toThrow(/Stop the server/);
+    });
+  });
+
+  it('recomputes a database built with older projection rules when it holds the lock', () => {
+    const { file, log, cli } = setup();
+    const old = openDatabase(file);
+    old.sqlite.exec('DELETE FROM projection_versions');
+    old.close();
+    cli().open({ create: false }).close();
+    expect(log).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/^Backup before migrating: /),
+        expect.stringMatching(/^Recomputed sessions after a rule change in \d+ ms\.$/),
+      ]),
+    );
   });
 });

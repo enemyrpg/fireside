@@ -6,6 +6,7 @@ import {
   afkSecondsWithin,
   closeTimedOutSessions,
   deriveSession,
+  estimateAfkPeriods,
   SESSION_TIMEOUT_MS,
   type SessionFacts,
 } from './sessions.js';
@@ -496,5 +497,196 @@ describe('session timeout', () => {
     const rows = (r: TestRun) => r.database.db.select().from(sessions).all();
     expect(rows(run)).toEqual(rows(rebuilt));
     expect(rows(run).map((row) => row.endReason)).toEqual(['timeout', null]);
+  });
+});
+
+describe('estimateAfkPeriods', () => {
+  const range = (from: string, to: string) => ({ startedAt: timeOf(from), endedAt: timeOf(to) });
+
+  it('keeps a run no real period touches', () => {
+    expect(estimateAfkPeriods([range('19:02', '19:06')], [])).toEqual([range('19:02', '19:06')]);
+  });
+
+  it('removes only the parts real periods cover', () => {
+    expect(
+      estimateAfkPeriods(
+        [range('19:00', '19:30')],
+        [range('18:50', '19:05'), range('19:10', '19:12'), range('19:11', '19:15')],
+      ),
+    ).toEqual([range('19:05', '19:10'), range('19:15', '19:30')]);
+  });
+
+  it('leaves nothing when a real period covers the whole run', () => {
+    expect(estimateAfkPeriods([range('19:02', '19:06')], [range('19:00', '19:06')])).toEqual([]);
+  });
+
+  it('counts a real period as [start, end): one ending at the run start takes nothing', () => {
+    expect(estimateAfkPeriods([range('19:02', '19:06')], [range('18:00', '19:02')])).toEqual([
+      range('19:02', '19:06'),
+    ]);
+  });
+});
+
+describe('AFK estimate from idle heartbeats', () => {
+  interface WithEstimates {
+    sessions: SnapshotSession[];
+    afkEstimates: { sessionId: string; startedAt: string; endedAt: string }[];
+  }
+  const idle = { payload: { idle: true } };
+  const estimate = (from: string, to: string, sessionId = S1) => ({
+    sessionId,
+    startedAt: timeOf(from),
+    endedAt: timeOf(to),
+  });
+
+  it('counts an ongoing idle run in an open session as AFK', () => {
+    const f = eventFactory();
+    const snapshot = expectOrderIndependent([
+      f.sessionStart(minutesAgo(10)),
+      f.heartbeat(minutesAgo(9)),
+      f.heartbeat(minutesAgo(4), idle),
+      f.heartbeat(minutesAgo(3), idle),
+      f.heartbeat(minutesAgo(2), idle),
+      f.heartbeat(minutesAgo(1), idle),
+    ]).sessions as WithEstimates;
+    expect(snapshot.afkEstimates).toEqual([estimate(minutesAgo(4), minutesAgo(1))]);
+    expect(snapshot.sessions).toEqual([
+      expect.objectContaining({
+        endedAt: null,
+        durationSeconds: 9 * 60,
+        afkSeconds: 3 * 60,
+        activeSeconds: 6 * 60,
+      }),
+    ]);
+  });
+
+  it('replaces the estimate with the real session.afk, whichever arrives first', () => {
+    const f = eventFactory();
+    const start = f.sessionStart('19:00');
+    const beats = [
+      f.heartbeat('19:01'),
+      f.heartbeat('19:07', idle),
+      f.heartbeat('19:08', idle),
+      f.heartbeat('19:09', idle),
+    ];
+    const afk = f.afk('19:02', '2026-11-08T19:09:30.000Z');
+    const end = f.sessionEnd('19:10');
+    const now = plus('19:10', 60_000);
+
+    // Heartbeats first: the estimate, then the real period replaces it.
+    const late = emptyRun();
+    ingestBatch(late, [start, ...beats], undefined, now);
+    expect(sessionRow(late)?.afkSeconds).toBe(120);
+    ingestBatch(late, [afk, end], undefined, now);
+    // The real period: 19:02 to 19:09:30.
+    expect(sessionRow(late)?.afkSeconds).toBe(7 * 60 + 30);
+
+    // The real period first: never an estimate.
+    const early = emptyRun();
+    ingestBatch(early, [start, afk, end], undefined, now);
+    ingestBatch(early, beats, undefined, now);
+    expect(sessionRow(early)?.afkSeconds).toBe(7 * 60 + 30);
+
+    const snapshot = expectOrderIndependent([start, ...beats, afk, end]).sessions as WithEstimates;
+    expect(snapshot.afkEstimates).toEqual([]);
+    expect(snapshot.sessions[0]?.afkSeconds).toBe(7 * 60 + 30);
+  });
+
+  it('keeps a trailing idle run as AFK when the session times out', () => {
+    const f = eventFactory();
+    const snapshot = expectOrderIndependent([
+      f.sessionStart('19:00'),
+      f.heartbeat('19:01'),
+      f.heartbeat('19:02', idle),
+      f.heartbeat('19:03', idle),
+      f.heartbeat('19:04', idle),
+      f.heartbeat('19:05', idle),
+      f.heartbeat('19:06', idle),
+    ]).sessions as WithEstimates;
+    expect(snapshot.afkEstimates).toEqual([estimate('19:02', '19:06')]);
+    expect(snapshot.sessions).toEqual([
+      expect.objectContaining({
+        endedAt: timeOf('19:06'),
+        endReason: 'timeout',
+        durationSeconds: 6 * 60,
+        afkSeconds: 4 * 60,
+        activeSeconds: 2 * 60,
+      }),
+    ]);
+  });
+
+  it('estimates idle runs in the middle only where no real period covers them', () => {
+    const f = eventFactory();
+    const snapshot = expectOrderIndependent([
+      f.sessionStart('19:00'),
+      // A run with its real period.
+      f.heartbeat('19:05', idle),
+      f.heartbeat('19:06', idle),
+      f.heartbeat('19:07', idle),
+      f.afk('19:00', '2026-11-08T19:07:30.000Z'),
+      f.heartbeat('19:08'),
+      // A run without one (the plugin never sent it).
+      f.heartbeat('19:20', idle),
+      f.heartbeat('19:21', idle),
+      f.heartbeat('19:22', idle),
+      f.heartbeat('19:23'),
+      f.sessionEnd('19:30'),
+    ]).sessions as WithEstimates;
+    expect(snapshot.afkEstimates).toEqual([estimate('19:20', '19:22')]);
+    // 7.5 minutes real, 2 minutes estimated.
+    expect(snapshot.sessions[0]?.afkSeconds).toBe(7 * 60 + 30 + 2 * 60);
+  });
+
+  it('keeps the part of a run after a real period as a new estimate', () => {
+    // Short AFK threshold: one period ended and the next began between two
+    // heartbeats, so they share one run with no active heartbeat between.
+    const f = eventFactory();
+    const snapshot = expectOrderIndependent([
+      f.sessionStart('19:00'),
+      f.heartbeat('19:01'),
+      f.heartbeat('19:02', idle),
+      f.heartbeat('19:03', idle),
+      f.heartbeat('19:04', idle),
+      f.heartbeat('19:05', idle),
+      f.heartbeat('19:06', idle),
+      f.afk('19:01', '2026-11-08T19:03:30.000Z'),
+      f.sessionEnd('19:07'),
+    ]).sessions as WithEstimates;
+    expect(snapshot.afkEstimates).toEqual([estimate('2026-11-08T19:03:30.000Z', '19:06')]);
+    // 2.5 minutes real, 2.5 minutes estimated.
+    expect(snapshot.sessions[0]?.afkSeconds).toBe(5 * 60);
+  });
+
+  it('stores nothing for a run of one idle heartbeat', () => {
+    const f = eventFactory();
+    const snapshot = expectOrderIndependent([
+      f.sessionStart('19:00'),
+      f.heartbeat('19:01'),
+      f.heartbeat('19:02', idle),
+      f.heartbeat('19:03'),
+      f.sessionEnd('19:04'),
+    ]).sessions as WithEstimates;
+    expect(snapshot.afkEstimates).toEqual([]);
+    expect(snapshot.sessions[0]?.afkSeconds).toBe(0);
+  });
+
+  it('gives the same rows after a rebuild as from ingest plus the timeout job', () => {
+    const f = eventFactory();
+    const events = [
+      f.sessionStart('19:00'),
+      f.heartbeat('19:01', idle),
+      f.heartbeat('19:02', idle),
+      f.heartbeat('19:03', idle),
+    ];
+    const live = emptyRun();
+    ingestBatch(live, events, undefined, plus('19:03', 60_000));
+    expect(closeTimedOutSessions(live.database.db, TEST_NOW)).toBe(1);
+    const rebuilt = runRebuild(events, PROJECTIONS, TEST_NOW);
+    const sessionsSnapshot = (run: TestRun) =>
+      PROJECTIONS.find((p) => p.name === 'sessions')?.snapshot(run.database.db);
+    expect(sessionsSnapshot(live)).toEqual(sessionsSnapshot(rebuilt));
+    expect((sessionsSnapshot(rebuilt) as WithEstimates).afkEstimates).toEqual([
+      estimate('19:01', '19:03'),
+    ]);
   });
 });

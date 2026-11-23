@@ -6,16 +6,17 @@ import {
   type PeriodUnit,
   type PlaytimeTotals,
 } from '@fireside/shared';
-import { and, asc, eq, gt, gte, inArray, lt } from 'drizzle-orm';
+import { and, asc, eq, gte, inArray, lt } from 'drizzle-orm';
 import type { Queryable } from '../db/index.js';
-import { sessionAfkPeriods, sessionHeartbeats, sessions } from '../db/schema.js';
+import { sessionHeartbeats, sessions } from '../db/schema.js';
+import { afkPeriodsOverlapping } from './afk-periods.js';
 
 // Play time from heartbeats. The one rule for the calendar and screen time, so
 // they always
 // show the same numbers:
 // - Each heartbeat is one minute (60 s), placed at its own `at`.
-// - It is AFK if an AFK period of the same session has
-//   `started_at <= at < ended_at`, otherwise active. The `idle` flag isn't used.
+// - It is AFK if an AFK period of the same session (real or estimated, see
+//   read/afk-periods.ts) has `started_at <= at < ended_at`, otherwise active.
 // - Local days, weeks and hours come from `at` in `TZ`, so a session across
 //   midnight (or a DST change) is split by its heartbeats.
 
@@ -114,22 +115,7 @@ function afkCheck(
   filter: PlaytimeFilter,
 ): (sessionId: string, at: string) => boolean {
   const periods = new Map<string, { startedAt: string; endedAt: string }[]>();
-  const afkRows = db
-    .select({
-      sessionId: sessionAfkPeriods.sessionId,
-      startedAt: sessionAfkPeriods.startedAt,
-      endedAt: sessionAfkPeriods.endedAt,
-    })
-    .from(sessionAfkPeriods)
-    .innerJoin(sessions, eq(sessions.id, sessionAfkPeriods.sessionId))
-    .where(
-      and(
-        inArray(sessions.accountId, filter.accountIds),
-        lt(sessionAfkPeriods.startedAt, filter.to),
-        gt(sessionAfkPeriods.endedAt, filter.from),
-      ),
-    )
-    .all();
+  const afkRows = afkPeriodsOverlapping(db, filter.accountIds, filter.from, filter.to);
   for (const { sessionId, ...period } of afkRows) {
     const list = periods.get(sessionId);
     if (list) list.push(period);

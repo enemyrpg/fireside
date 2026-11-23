@@ -96,6 +96,16 @@ migrations on a copy of a real database (the original is only read):
 pnpm --filter @fireside/server check-migration <db-file> [<work-dir>]
 ```
 
+### Changing a projection's rules
+
+When a change gives existing events other derived rows (a new rule, a fixed
+calculation), bump the projection's `version` in the same pull request. Then
+either give the projection a `recompute`, which updates only what the rule
+changes, or rely on the fallback: a full rebuild. At startup, the server
+recomputes every projection whose stored version is older, so existing data
+needs no manual step (see
+[ADR 0017](docs/decisions/0017-projection-rule-changes-recompute-at-startup.md)).
+
 ## Repository layout
 
 | Folder     | Contents                                                                                             |

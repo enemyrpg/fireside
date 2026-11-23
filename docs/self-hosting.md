@@ -655,6 +655,13 @@ database from a newer Fireside version is refused ("Is the database from a
 newer version?"): restore a backup from before the downgrade, or upgrade
 again.
 
+When a new version changes how existing data is derived (for example, how AFK
+time is counted), the server recomputes it at the same startup, after the
+migrations and in the same transaction. The copy before migrating is taken
+first. There is no manual step. That start takes a little longer, and the log
+says "Recomputed projections after a rule change" with the time it took. The
+plugin retries anything it sends meanwhile.
+
 ## Moving to another machine
 
 1. **On the old machine, take a fresh backup** while the server runs:

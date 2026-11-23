@@ -5,6 +5,7 @@ import { rebuildDerivedTables } from '../admin/rebuild.js';
 import { systemClock, type Clock } from '../auth/api-keys.js';
 import { PROJECTIONS } from '../projections/index.js';
 import { closeTimedOutSessions } from '../projections/sessions.js';
+import { projectionUpgrade, REBUILT_COLUMNS } from '../projections/versions.js';
 import { MIGRATIONS_TABLE, openDatabase, type Database } from './index.js';
 
 // Checks that migrating a database changes nothing but what the migration
@@ -131,6 +132,11 @@ export interface TableComparison {
   before: TableState | undefined;
   after: TableState | undefined;
   ok: boolean;
+  /**
+   * Recomputed at startup after a projection rule change: allowed to differ,
+   * and compared exactly by the rebuild check instead.
+   */
+  recomputed?: boolean;
 }
 
 export interface CheckResult {
@@ -278,6 +284,7 @@ export function checkMigration(
   // the ones it added, from before 0024 the 2FA columns on `users`. Every
   // other column is compared.
   let ignore: Readonly<Record<string, readonly string[]>>;
+  const beforeLoose = new Map<string, TableState>();
   try {
     hadUsers = userTables(raw).includes('users');
     hadTwoFactor =
@@ -290,17 +297,39 @@ export function checkMigration(
       ...(hadTwoFactor ? {} : COLUMNS_ADDED_BY_TWO_FACTOR_MIGRATION),
     };
     before = tableStates(raw, ignore);
+    // Without the columns a full rebuild sets again, in case the upgrade is one.
+    for (const [table, columns] of Object.entries(REBUILT_COLUMNS)) {
+      if (before.has(table)) {
+        beforeLoose.set(table, tableState(raw, table, [...(ignore[table] ?? []), ...columns]));
+      }
+    }
   } finally {
     raw.close();
   }
 
-  const database = openDatabase(file, migrationsFolder === undefined ? {} : { migrationsFolder });
+  const database = openDatabase(file, {
+    ...(migrationsFolder === undefined ? {} : { migrationsFolder }),
+    upgrade: projectionUpgrade({ now }),
+  });
   try {
     const after = tableStates(database.sqlite, ignore);
+    const recomputed = new Set(database.upgrade?.tables ?? []);
+    const looseColumns = database.upgrade?.columns ?? {};
     const names = [...new Set([...before.keys(), ...after.keys()])].sort();
     const tables = names.map((table): TableComparison => {
       const old = before.get(table);
       const current = after.get(table);
+      if (recomputed.has(table))
+        return { table, before: old, after: current, ok: true, recomputed: true };
+      const loose = looseColumns[table];
+      if (loose !== undefined && old !== undefined) {
+        const ignored = [...(ignore[table] ?? []), ...loose];
+        const ok = isDeepStrictEqual(
+          beforeLoose.get(table),
+          tableState(database.sqlite, table, ignored),
+        );
+        return { table, before: old, after: current, ok };
+      }
       const ok =
         old === undefined
           ? (!hadUsers && TABLES_ADDED_BY_USERS_MIGRATION.includes(table)) ||
@@ -344,7 +373,8 @@ export function formatMigrationReport(report: MigrationCheckReport): string[] {
     ...report.tables.map(
       (row) =>
         `  ${mark(row.ok)} ${row.table.padEnd(width)}  ${rows(row.before).padStart(8)} → ${rows(row.after).padStart(8)}` +
-        (row.before === undefined ? '  (new table)' : ''),
+        (row.before === undefined ? '  (new table)' : '') +
+        (row.recomputed ? '  (recomputed: see the rebuild check)' : ''),
     ),
     '',
     'Ownership after migrating:',

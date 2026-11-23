@@ -71,8 +71,8 @@ export class UserNotFoundError extends Error {
 
 /**
  * Tables with an `account_id`, deleted for the user's accounts in this
- * order. Their own children cascade (sessions → heartbeats, afk periods and
- * summaries; xp/loot/bank/potion snapshots → their items). `clog_*` point at
+ * order. Their own children cascade (sessions → heartbeats, AFK periods, AFK
+ * estimates and summaries; xp/loot/bank/potion snapshots → their items). `clog_*` point at
  * `external_snapshots`, so they go first; everything that points at an event
  * goes before `events`.
  */

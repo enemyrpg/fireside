@@ -632,6 +632,23 @@ export const sessionAfkPeriods = sqliteTable(
 );
 
 /**
+ * Derived: AFK estimated from idle heartbeats where no `session.afk` period
+ * covers them, e.g. while an AFK period is still ongoing. Rewritten for the
+ * session on every refresh. See docs/architecture.md#sessions.
+ */
+export const sessionAfkEstimates = sqliteTable(
+  'session_afk_estimates',
+  {
+    sessionId: text('session_id')
+      .notNull()
+      .references(() => sessions.id, { onDelete: 'cascade' }),
+    startedAt: text('started_at').notNull(),
+    endedAt: text('ended_at').notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.sessionId, table.startedAt] })],
+);
+
+/**
  * One row per closed session, removed if it reopens. Built from the session's
  * XP snapshots, loot events and KC observations. See
  * docs/architecture.md#sessions.
@@ -1362,3 +1379,14 @@ export const accountPets = sqliteTable(
   },
   (table) => [primaryKey({ columns: [table.accountId, table.petItemId] })],
 );
+
+/**
+ * The rules version each projection's derived rows were built with. A
+ * projection whose version in code is newer is recomputed at startup
+ * (server/src/projections/versions.ts). A missing row means version 1.
+ */
+export const projectionVersions = sqliteTable('projection_versions', {
+  name: text('name').primaryKey(),
+  version: integer('version').notNull(),
+  updatedAt: text('updated_at').notNull(),
+});

@@ -10,6 +10,7 @@ import {
   type Database,
   type OpenDatabaseOptions,
 } from '../db/index.js';
+import { projectionUpgrade } from '../projections/versions.js';
 import { CliError, type OpenDbOptions } from './run.js';
 
 // How `pnpm cli` shares DATA_DIR with a server (see backup/lock.ts).
@@ -96,12 +97,14 @@ export class CliDataDir {
   open(options: OpenDbOptions): Database {
     this.prepare(options);
     const { backupDir = join(this.dataDir, 'backups'), migrationsFolder } = this.openOptions;
+    const upgrade = projectionUpgrade();
     if (!this.running) {
       try {
         const copy = backupBeforeMigrating({
           dbFile: this.dbFile,
           backupDir,
           ...(migrationsFolder === undefined ? {} : { migrationsFolder }),
+          upgradePending: upgrade.pending,
         });
         if (copy !== undefined) this.log(`Backup before migrating: ${copy}`);
       } catch (error) {
@@ -115,7 +118,14 @@ export class CliDataDir {
       const database = openDatabase(this.dbFile, {
         ...(migrationsFolder === undefined ? {} : { migrationsFolder }),
         migrate: !this.running,
+        upgrade,
       });
+      if (database.upgrade) {
+        const { projections, durationMs } = database.upgrade;
+        this.log(
+          `Recomputed ${projections.join(', ')} after a rule change in ${String(durationMs)} ms.`,
+        );
+      }
       // A database (and `-wal`) this command just created.
       this.makePrivate();
       return database;
@@ -124,7 +134,7 @@ export class CliDataDir {
         throw new CliError(
           `${error.message}\nA running server uses this database, and this code expects a ` +
             'newer database version. Stop the server and run the command again (it then ' +
-            'applies the migrations), or run it from the same version as the server.',
+            'brings the database up to date), or run it from the same version as the server.',
         );
       }
       throw new CliError(`Could not open the database at ${this.dbFile}: ${String(error)}`);

@@ -35,6 +35,11 @@ export interface PreMigrateOptions {
   backupDir: string;
   /** Only tests change this. */
   migrationsFolder?: string;
+  /**
+   * Whether projections must be recomputed (`DatabaseUpgrade.pending`): that
+   * changes the database too, so it also gets a copy first.
+   */
+  upgradePending?: (sqlite: BetterSqlite3.Database) => boolean;
   now?: Clock;
 }
 
@@ -53,7 +58,7 @@ function appliedMigrations(sqlite: BetterSqlite3.Database): number {
 
 /**
  * Copies `dbFile` into `backupDir` if it is an existing database with pending
- * migrations. Returns the copy's path, or `undefined` when no copy is needed
+ * migrations or a pending upgrade. Returns the copy's path, or `undefined` when no copy is needed
  * (no file, a new database, or nothing pending). Only reads `dbFile`. Throws
  * `PreMigrateBackupError` if the copy fails: the caller must then not migrate.
  * A database from a newer version throws the same error `openDatabase` would.
@@ -62,6 +67,7 @@ export function backupBeforeMigrating({
   dbFile,
   backupDir,
   migrationsFolder = MIGRATIONS_DIR,
+  upgradePending,
   now = systemClock,
 }: PreMigrateOptions): string | undefined {
   if (!existsSync(dbFile)) return undefined;
@@ -74,7 +80,9 @@ export function backupBeforeMigrating({
   let temp: string | undefined;
   try {
     if (appliedMigrations(source) === 0) return undefined;
-    if (countPendingMigrations(source, migrationsFolder) === 0) return undefined;
+    if (countPendingMigrations(source, migrationsFolder) === 0 && !upgradePending?.(source)) {
+      return undefined;
+    }
 
     try {
       ensurePrivateDir(backupDir);

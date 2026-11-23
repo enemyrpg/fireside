@@ -157,12 +157,28 @@ Raw data from external sources follows the same rule in its own table,
 4. Rebuild the collection log tables (and the pets that come from it) from
    `external_snapshots`.
 
+Afterwards the current rules version of every projection is stored in
+`projection_versions`.
+
 Account IDs are kept. Tables that are not derived are never touched: users,
 sessions and devices, API keys, invites, audit log, settings, icons, prices
 and price history, `external_snapshots`, `clog_reads`, the user's raid split
 choices and collection log source. `pnpm --filter @fireside/server
 check-migration` uses a rebuild to check that a migration keeps the derived
 tables the same.
+
+### Rule changes
+
+A change to a projection's rules for existing events bumps its `version`
+([ADR 0017](decisions/0017-projection-rule-changes-recompute-at-startup.md)).
+At startup, after migrations and in the same transaction,
+`server/src/projections/versions.ts` brings every projection with an older
+stored version up to date. It uses the projection's `recompute` if it has one
+(sessions: refresh every session, then empty the `weekly_summaries` cache), and
+otherwise a full rebuild. Then it stores the current versions. The copy before
+migrating is taken first, and the server listens only afterwards, so ingest
+waits. `check-migration` allows the recomputed tables to differ and compares
+them with a rebuild instead.
 
 ## Sessions
 
@@ -182,6 +198,27 @@ A session is what the plugin calls one login: `session.start` to
   more than a minute of skew.
 - AFK periods are counted once even when they overlap, and active time is the
   duration minus AFK.
+- The plugin sends `session.afk` only when an AFK period ends. Until then, AFK
+  is estimated from the heartbeat `idle` flag. Each run of consecutive idle
+  heartbeats counts as AFK from its first to its last idle heartbeat, minus
+  every part a stored `session.afk` period covers. What is left, if it has a
+  length above zero, is stored in `session_afk_estimates`. A run of one
+  heartbeat has no length. The plugin sets `idle` only during an AFK period, so
+  idle time after a real period's end belongs to a new period, even within one
+  run. A real `session.afk` therefore always wins, also when it arrives late or
+  out of order. A session closed by `timeout` (a killed client) keeps its
+  trailing idle run as AFK up to its end, by the same rule. The estimate is
+  rewritten whenever the session row is refreshed, and it never depends on the
+  clock.
+- The estimate starts at the first idle heartbeat, and the plugin sets `idle`
+  only once the AFK threshold has passed. So until the real `session.afk`
+  arrives, the estimate is short by the threshold plus up to one heartbeat
+  interval.
+- Every view (session detail, Sessions, screen time, the calendar and the
+  weekly summary) reads real and estimated periods the same way
+  (`server/src/read/afk-periods.ts`) and has no AFK rules of its own. Screen
+  time and the calendar count a heartbeat as AFK if a period has
+  `started_at <= at < ended_at`.
 - A world hop ends one session and starts another. The dashboard shows hops
   less than 2 minutes apart as one row.
 - Gains in a session (XP, kill counts, loot) are never negative.
