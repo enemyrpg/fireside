@@ -7,6 +7,9 @@ import {
   type PriceMoverItem,
   type PriceMoverPeriod,
   type PriceMoverPeriodResult,
+  comparePriceMovers,
+  priceMoverPeriodResultSchema,
+  sumPriceChanges,
 } from '@fireside/shared';
 import { describe, expect, it } from 'vitest';
 import {
@@ -24,6 +27,7 @@ import {
   moverParam,
   moverPeriodOf,
   moverRatio,
+  moversForTab,
   splitMovers,
   netWorth,
   parseHistoryRange,
@@ -537,5 +541,112 @@ describe('price movers', () => {
     expect(moverKey({ kind: 'ITEM', itemId: 2434 })).not.toBe(
       moverKey({ kind: 'POTION', itemId: 2434 }),
     );
+  });
+});
+
+describe('moversForTab', () => {
+  const mover = (
+    itemId: number,
+    quantity: number,
+    priceEach: number,
+    previousPriceEach: number,
+  ): PriceMoverItem => ({
+    kind: 'ITEM',
+    itemId,
+    name: `Item ${String(itemId)}`,
+    quantity,
+    priceEach,
+    previousPriceEach,
+    change: quantity * (priceEach - previousPriceEach),
+  });
+  // As the API sends it: quantities over bank, inventory and equipment.
+  const items: PriceMoverItem[] = [
+    mover(1, 10, 1200, 1000), // +2000
+    mover(2, 3, 600, 500), // +300
+    {
+      kind: 'POTION',
+      itemId: 3,
+      name: 'Prayer potion',
+      doses: 40,
+      itemDoses: 4,
+      priceEach: 9200,
+      previousPriceEach: 9100,
+      change: 1000,
+    },
+    mover(4, 5, 90, 100), // −50
+    mover(5, 2, 400, 500), // −200
+  ];
+  items.sort(comparePriceMovers);
+  const PERIOD: PriceMoverPeriodResult = {
+    period: '7d',
+    baselineAt: '2026-11-14T00:00:05.000Z',
+    change: sumPriceChanges(items),
+    items,
+  };
+  const sections = bankSections(
+    bankOf([
+      [1, 'One', 4, 0, 0, 1],
+      [1, 'Four', 5, 0, 0, 4],
+      [1, 'Two', 0, 0, 0, 2], // placeholder
+      filler(1),
+      [2, 'One', 6, 0, 0, 1],
+      [2, 'Five', 1, 0, 0, 5],
+      [2, 'Five', 1, 0, 0, 5],
+      [2, 'Two', 3, 0, 0, 2],
+      [3, 'Not moved', 7, 0, 0, 99],
+      [0, 'Prayer potion(4)', 1, 0, 0, 3],
+    ]),
+  );
+  const ids = (result: PriceMoverPeriodResult) => result.items.map((item) => item.itemId);
+
+  it('leaves All as the API sent it', () => {
+    expect(moversForTab(PERIOD, sections, 'all')).toBe(PERIOD);
+  });
+
+  it('keeps only the items of the tab, with the quantity in that tab', () => {
+    const result = moversForTab(PERIOD, sections, 1);
+    expect(ids(result)).toEqual([1, 4]);
+    expect(result.items.map((item) => (item.kind === 'ITEM' ? item.quantity : 0))).toEqual([4, 5]);
+    // 4 × +200 and 5 × −10.
+    expect(result.items.map((item) => item.change)).toEqual([800, -50]);
+    expect(result.change).toBe(750);
+  });
+
+  it('counts an item split across tabs only where it is', () => {
+    expect(moversForTab(PERIOD, sections, 2).items.find((item) => item.itemId === 1)?.change).toBe(
+      1200,
+    );
+  });
+
+  it('adds up stacks of the same item in a tab', () => {
+    const five = moversForTab(PERIOD, sections, 2).items.find((item) => item.itemId === 5);
+    expect(five).toMatchObject({ quantity: 2, change: -200 });
+  });
+
+  it('ignores placeholders, fillers and potion storage', () => {
+    // Item 2 is a placeholder in tab 1; item 3 is in the main tab as an item,
+    // but its mover is the potion in potion storage.
+    expect(ids(moversForTab(PERIOD, sections, 1))).not.toContain(2);
+    expect(moversForTab(PERIOD, sections, 0).items).toEqual([]);
+  });
+
+  it('sums and sorts like the API, and is a valid period result', () => {
+    const result = moversForTab(PERIOD, sections, 2);
+    expect(ids(result)).toEqual([1, 2, 5]);
+    expect(result.change).toBe(1200 + 300 - 200);
+    expect(result.change).toBe(sumPriceChanges(result.items));
+    expect([...result.items].sort(comparePriceMovers)).toEqual(result.items);
+    expect(priceMoverPeriodResultSchema.safeParse(result).success).toBe(true);
+    expect(result).toMatchObject({ period: '7d', baselineAt: PERIOD.baselineAt });
+  });
+
+  it('is empty, with a sum of 0, for a tab where nothing moved', () => {
+    expect(moversForTab(PERIOD, sections, 3)).toMatchObject({ change: 0, items: [] });
+  });
+
+  it('recomputes the change and drops one that comes to 0', () => {
+    // The change is never taken from the response: it is counted again for the tab.
+    const stale = { ...PERIOD, items: [{ ...mover(1, 1, 1000, 1000), change: 1 }] };
+    expect(moversForTab(stale, sections, 2)).toMatchObject({ change: 0, items: [] });
   });
 });

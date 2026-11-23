@@ -30,6 +30,7 @@ import {
   parseBankSection,
   moverParam,
   moverPeriodOf,
+  moversForTab,
   parseHistoryRange,
   parseTab,
   parseValueMode,
@@ -57,7 +58,8 @@ import {
 
 // Bank: `/:acc/bank?value=ge|ha&tab=main|1…9
 // &range=30d|90d|1y&q=&view=list&placeholders=off&section=carried|potions|value
-// &movers=24h|7d|30d&top=valuable` (the last two for Price movers). For one
+// &movers=24h|7d|30d&top=valuable` (the last two for Price movers, which
+// follow `tab` like Most valuable). For one
 // account a row with net worth large and three numbers, then three columns on PC: the bank 1:1 with
 // the game; what was carried and potion storage; value over time, value by tab
 // and the most valuable stacks. On mobile one section at a time (`?section=`,
@@ -430,6 +432,15 @@ function AccountView({
   const [bankExpanded, setBankExpanded] = useState(false);
   const [potionsExpanded, setPotionsExpanded] = useState(false);
   const [moversExpanded, setMoversExpanded] = useState(false);
+  // Price movers list another set of items per tab, so any change of tab (the
+  // buttons, "By tab" or back/forward) folds them again. Reset while
+  // rendering, as React advises for state that follows a prop:
+  // https://react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes
+  const [moversTab, setMoversTab] = useState(tab);
+  if (moversTab !== tab) {
+    setMoversTab(tab);
+    setMoversExpanded(false);
+  }
 
   const update = (changes: Record<string, string | null>, replace: boolean) => {
     setSearchParams(
@@ -491,9 +502,16 @@ function AccountView({
   // of them: the card is "Most valuable" alone, without any message.
   const moverPeriods = mode === 'ge' && currentPrices ? (priceMovers.data?.periods ?? []) : [];
   const moverPeriod = moverPeriodOf(searchParams.get('movers'), moverPeriods);
-  const movers: PriceMoversView | undefined = moverPeriod && {
+  // The API sums everything held; a chosen tab narrows it to that tab's items.
+  const shownMovers = useMemo(
+    () => moverPeriod && moversForTab(moverPeriod, sections, tab),
+    [moverPeriod, sections, tab],
+  );
+  const movers: PriceMoversView | undefined = shownMovers && {
     periods: moverPeriods,
-    shown: moverPeriod,
+    shown: shownMovers,
+    tab,
+    showScope: hasTabs(sections),
     // A period is a view choice: it replaces the URL, like a switch.
     onPeriod: (next) => {
       update({ movers: moverParam(next, moverPeriods) }, true);

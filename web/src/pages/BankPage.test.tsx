@@ -1015,6 +1015,88 @@ describe('Price movers', () => {
     expect(movers.queryByRole('radiogroup', { name: 'Item rankings' })).toBeNull();
     expect((await card('Most valuable')).section).not.toBe(section);
   });
+
+  // Items of the fixture's 7 d spread over tabs: Dragon arrowtips in tabs 1
+  // and 3, two stacks of Rune kiteshield in tab 3, a Onyx bolt tips
+  // placeholder in tab 3, and tab 5 with nothing that moved.
+  const bankTabs = {
+    ...bankOf([
+      [1, 'Saturated heart', 1, 61_090_000, 27641],
+      [1, 'Dragon arrowtips', 200, 2642, 11237],
+      [1, 'Amulet of rancour', 1, 43_322_000, 29801],
+      [3, 'Masori body', 1, 47_250_000, 27226],
+      [3, 'Dragon arrowtips', 156, 2642, 11237],
+      [3, 'Rune kiteshield', 2, 31_800, 1201],
+      [3, 'Rune kiteshield', 4, 31_800, 1201],
+      [3, 'Onyx bolt tips', 0, 8500, 9194],
+      [5, 'Chisel', 1, 100, 1755],
+      [0, 'Dragon hunter lance', 1, 39_380_000, 22978],
+    ]),
+    prices: { source: 'CURRENT', fetchedAt: moversThree.prices.fetchedAt },
+  };
+
+  it('follows the chosen tab, with the tab in the subtitle', async () => {
+    stubDesktop();
+    mockBank('1', { bank: bankTabs, answers: { [MOVERS]: { body: moversThree } } });
+    const user = userEvent.setup();
+    const { router } = renderApp('/1/bank');
+    const { section, ...movers } = await card('Price movers');
+    // All: the API's sum, which covers more than the bank tabs.
+    expect(movers.getByText('Everything held · GE')).toBeTruthy();
+    expect(section.textContent).toContain('▲ Up 4.18M gp');
+
+    const tabs = (await card('Bank')).getByRole('group', { name: 'Bank tabs' });
+    await user.click(within(tabs).getByRole('button', { name: 'Tab 3' }));
+    expect(router.state.location.search).toBe('?tab=3');
+    expect(movers.getByText('Tab 3 · GE')).toBeTruthy();
+    // Masori body +1,420,000; arrowtips 156 × −113 = −17,628; kiteshields 6 × −257.
+    expect(section.textContent).toContain('▲ Up 1.4M gp');
+    expect(rows(listOf(section, 'Gained most'))).toEqual(['Masori body+3.1%▲ 1.42M']);
+    expect(rows(listOf(section, 'Lost most'))).toEqual([
+      'Dragon arrowtips × 156−4.1%▼ 17.6K',
+      'Rune kiteshield × 6−0.8%▼ 1,542',
+    ]);
+    // Most valuable keeps its own label.
+    await user.click(movers.getByRole('radio', { name: 'Most valuable' }));
+    expect(movers.getByText('Tab 3 · GE')).toBeTruthy();
+    await user.click(within(tabs).getByRole('button', { name: 'All tabs' }));
+    expect(movers.getByText('All tabs · GE')).toBeTruthy();
+  });
+
+  it('says so for a tab where nothing moved', async () => {
+    stubDesktop();
+    mockBank('1', { bank: bankTabs, answers: { [MOVERS]: { body: moversThree } } });
+    renderApp('/1/bank?tab=5');
+    const { section, ...movers } = await card('Price movers');
+    expect(movers.getByText('Tab 5 · GE')).toBeTruthy();
+    expect(section.textContent).toContain('No price changes for what you hold.');
+    expect(section.textContent).not.toMatch(/[▲▼]/);
+  });
+
+  it('folds "Show all" again when the tab changes', async () => {
+    stubDesktop();
+    mockBank('1', { bank: bankTabs, answers: { [MOVERS]: { body: moversThree } } });
+    const user = userEvent.setup();
+    renderApp('/1/bank');
+    const { section, ...movers } = await card('Price movers');
+    await user.click(movers.getByRole('button', { name: 'Show all' }));
+    expect(rows(listOf(section, 'Gained most'))).toHaveLength(5);
+    const tabs = (await card('Bank')).getByRole('group', { name: 'Bank tabs' });
+    await user.click(within(tabs).getByRole('button', { name: 'Tab 3' }));
+    await user.click(within(tabs).getByRole('button', { name: 'All tabs' }));
+    expect(rows(listOf(section, 'Gained most'))).toHaveLength(4);
+    expect(movers.getByRole('button', { name: 'Show all' }).getAttribute('aria-expanded')).toBe(
+      'false',
+    );
+  });
+
+  it('names the tab on mobile too', async () => {
+    mockBank('1', { bank: bankTabs, answers: { [MOVERS]: { body: moversThree } } });
+    renderApp('/1/bank?section=value&tab=3');
+    const { section, ...movers } = await card('Price movers');
+    expect(movers.getByText('Tab 3 · GE')).toBeTruthy();
+    expect(rows(listOf(section, 'Gained most'))).toEqual(['Masori body+3.1%▲ 1.42M']);
+  });
 });
 
 describe('Bank in the menu', () => {
