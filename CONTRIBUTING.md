@@ -157,6 +157,25 @@ Breaking changes need a new API or event schema version. Raw events are
 stored unchanged, and everything derived from them must be rebuildable
 (`pnpm cli rebuild`). Events are idempotent by `eventId`.
 
+## Labels
+
+- **Type:** one per issue: `bug`, `enhancement`, `documentation`, `ci`,
+  `question`.
+- **Area:** usually one: `area: web`, `area: server`, `area: contract`,
+  `area: deploy`.
+- **Cross-cutting:** `accessibility` (barriers for people with disabilities)
+  and `multi-user` (several users on one instance), alongside the area.
+- **Status**, only when it applies: `needs decision`, `needs info`,
+  `blocked`, `good first issue`, `help wanted`.
+- **Priority**, only when it applies: `priority: high` or `priority: low`.
+  No priority label means normal.
+- **On closing:** `wontfix` (close as "not planned" and link the ADR in
+  [docs/decisions/](docs/decisions/README.md) it goes against) or
+  `duplicate` (link the original issue).
+- Set automatically, don't add them by hand: `dependencies` and `javascript`
+  (Dependabot), `autorelease: pending` and `autorelease: tagged`
+  (release-please).
+
 ## Releases
 
 Releases are made by [release-please](https://github.com/googleapis/release-please)
