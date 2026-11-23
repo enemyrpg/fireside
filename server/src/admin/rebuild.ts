@@ -11,6 +11,7 @@ import {
   type ProjectionLogger,
   type ProjectionResult,
 } from '../projections/index.js';
+import { recordCurrentVersions } from '../projections/versions.js';
 
 // Shared by `pnpm cli rebuild|reprocess` and `POST /api/v1/admin/rebuild`.
 // Both run synchronously: the HTTP server waits until they finish.
@@ -60,7 +61,15 @@ export function rebuildDerivedTables(
       const result = rebuildProjections(db, { projections, now, ...(log ? { log } : {}) });
       // The collection log tables are derived from `external_snapshots`, not
       // from events, so they are rebuilt on their own.
-      const clog = db.transaction((tx) => rebuildClog(tx, log), { behavior: 'immediate' });
+      const clog = db.transaction(
+        (tx) => {
+          const counts = rebuildClog(tx, log);
+          // Everything was just built with the current rules.
+          recordCurrentVersions(tx, projections, now);
+          return counts;
+        },
+        { behavior: 'immediate' },
+      );
       if (clog.applied + clog.skipped > 0) {
         log?.info(
           { snapshots: clog.applied, skipped: clog.skipped },

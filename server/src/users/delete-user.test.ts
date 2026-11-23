@@ -2,7 +2,7 @@ import { createSecretBox, memoryKeyStore } from '../auth/secret-box.js';
 import { copyFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { BRANDING, type Event } from '@fireside/shared';
+import { BRANDING, eventSchema, type Event } from '@fireside/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { rebuildDerivedTables } from '../admin/rebuild.js';
 import { audit, inviteTarget, userTarget } from '../audit/audit.js';
@@ -15,7 +15,8 @@ import { storeExternalSnapshot } from '../clog/project.js';
 import { setClogSource } from '../clog/sync.js';
 import { openDatabase, type Database } from '../db/index.js';
 import { apiKeys, externalSnapshots, invites, raidDropChoices } from '../db/schema.js';
-import { PROJECTIONS } from '../projections/index.js';
+import { storeEvents } from '../ingest/store.js';
+import { PROJECTIONS, projectEvents } from '../projections/index.js';
 import { createManualDrop, setSplitDefault } from '../raids/choices.js';
 import { ownedAccountIds } from '../read/accounts.js';
 import { generateSeed, type SeedData } from '../seed/generator/generate.js';
@@ -49,6 +50,8 @@ const SHARED_TABLES = [
   'item_price_history',
   'external_sources',
   'server_settings',
+  // The rules version of each projection: one row per projection, for the instance.
+  'projection_versions',
 ];
 /**
  * Tables with references to a user that are kept on deletion (the foreign
@@ -173,6 +176,45 @@ async function readWeeks(database: Database, userId: number): Promise<void> {
   }
 }
 
+/**
+ * A session still AFK when it ends: idle heartbeats and no `session.afk`, so
+ * it has an AFK estimate (`session_afk_estimates`). Event and session IDs are
+ * per user, since they are global.
+ */
+function storeAfkEstimate(database: Database, userId: number, apiKeyId: number): void {
+  const accountHash = database.sqlite
+    .prepare('SELECT account_hash FROM accounts WHERE user_id = ? ORDER BY id LIMIT 1')
+    .pluck()
+    .get(userId) as string;
+  const id = (n: number) =>
+    `0193a000-0000-7000-8000-${(userId * 100 + n).toString(16).padStart(12, '0')}`;
+  const sessionId = id(0);
+  const base = { schemaVersion: 1, accountHash, sessionId } as const;
+  const heartbeat = (n: number) => ({
+    ...base,
+    eventId: id(n),
+    type: 'session.heartbeat',
+    occurredAt: `2026-10-20T18:0${String(n)}:00.000Z`,
+    payload: {
+      regionId: 12342,
+      world: 420,
+      worldTypes: ['MEMBERS'],
+      worldLocation: 'GERMANY',
+      worldActivity: '',
+      idle: n > 1,
+    },
+  });
+  const events = [1, 2, 3, 4].map((n) => eventSchema.parse(heartbeat(n)));
+  const { storedIds } = storeEvents(
+    database.db,
+    events.map((event, index) => ({ index, event, raw: { ...event } })),
+    { userId, apiKeyId, receivedAt: NOW.toISOString() },
+  );
+  expect(
+    projectEvents(database.db, storedIds, { projections: PROJECTIONS, now: () => NOW }).failed,
+  ).toEqual([]);
+}
+
 /** Gives a user everything the dashboard can store besides events. */
 async function setUpUser(database: Database, userId: number): Promise<void> {
   setPasswordHash(database.db, userId, await hashPassword('a long passphrase', CHEAP));
@@ -195,7 +237,8 @@ async function setUpUser(database: Database, userId: number): Promise<void> {
     .insert(raidDropChoices)
     .values({ eventId: event, itemIndex: 0, note: 'a note', updatedAt: NOW.toISOString() })
     .run();
-  createApiKey(database.db, ownKey(userId), 'Laptop', NOW);
+  const laptop = createApiKey(database.db, ownKey(userId), 'Laptop', NOW).id;
+  storeAfkEstimate(database, userId, laptop);
   createSession(database.db, userId, { now: NOW });
   // 2FA recovery codes and a known device.
   replaceRecoveryCodes(database.db, createSecretBox(memoryKeyStore()), userId, NOW);

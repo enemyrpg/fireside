@@ -1,4 +1,5 @@
 import { rmSync } from 'node:fs';
+import { projectionUpgrade } from '../projections/versions.js';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { EVENT_TYPES, type Event } from '@fireside/shared';
@@ -274,7 +275,7 @@ function openSeedDatabaseLocked(args: SeedArgs, file: string): Database {
     for (const suffix of ['', '-wal', '-shm']) rmSync(`${file}${suffix}`, { force: true });
   }
 
-  const database = openDatabase(file);
+  const database = openDatabase(file, { upgrade: projectionUpgrade() });
   const stored = database.db.select({ n: count() }).from(eventsTable).get()?.n ?? 0;
   if (stored > 0) {
     database.close();

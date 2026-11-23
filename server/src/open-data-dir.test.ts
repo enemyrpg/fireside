@@ -17,7 +17,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { acquireInstanceLock, InstanceLockedError, lockPath } from './backup/lock.js';
 import { migrationsWithExtra } from './backup/testing.js';
 import { DATA_DIR_STEPS, openDataDir, type DataDirSteps } from './open-data-dir.js';
-import { databasePath, openDatabase } from './db/index.js';
+import { databasePath, openDatabase, type DatabaseUpgrade } from './db/index.js';
 
 const N = BRANDING.shortName;
 
@@ -218,5 +218,76 @@ describe('openDataDir (server startup)', () => {
         opened.lock.release();
       }
     });
+  });
+});
+
+describe('openDataDir after a projection rule change', () => {
+  let dir: string;
+  let dataDir: string;
+  let backupDir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), `${N}-test-`));
+    dataDir = join(dir, 'data');
+    backupDir = join(dir, 'backups');
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** An upgrade that is pending until it has run, recording when it runs. */
+  function fakeUpgrade(calls: string[]): DatabaseUpgrade {
+    let done = false;
+    return {
+      pending: () => !done,
+      run: () => {
+        calls.push('upgrade');
+        done = true;
+        return { projections: ['sessions'], counts: {}, tables: [], columns: {}, durationMs: 0 };
+      },
+    };
+  }
+
+  it('backs up first, then recomputes while migrating, with no migration pending', () => {
+    // Up to date, but built with older rules.
+    openDatabase(databasePath(dataDir)).close();
+    const calls: string[] = [];
+    const steps: DataDirSteps = {
+      ...DATA_DIR_STEPS,
+      backupBeforeMigrating: (options) => {
+        calls.push('backupBeforeMigrating');
+        return DATA_DIR_STEPS.backupBeforeMigrating(options);
+      },
+      migrate: (file, options) => {
+        calls.push('migrate');
+        return DATA_DIR_STEPS.migrate(file, options);
+      },
+    };
+    const opened = openDataDir({ dataDir, backupDir, upgrade: fakeUpgrade(calls) }, steps);
+    try {
+      expect(calls).toEqual(['backupBeforeMigrating', 'migrate', 'upgrade']);
+      expect(opened.preMigrateBackup).toMatch(/pre-migrate/);
+      expect(opened.database.upgrade?.projections).toEqual(['sessions']);
+    } finally {
+      opened.database.close();
+      opened.lock.release();
+    }
+  });
+
+  it('records the current versions, so the next start does nothing', () => {
+    openDatabase(databasePath(dataDir)).close();
+    const first = openDataDir({ dataDir, backupDir });
+    expect(first.database.upgrade?.projections).toEqual(['sessions']);
+    expect(first.preMigrateBackup).toBeDefined();
+    first.database.close();
+    first.lock.release();
+
+    const second = openDataDir({ dataDir, backupDir });
+    try {
+      expect(second.database.upgrade).toBeUndefined();
+      expect(second.preMigrateBackup).toBeUndefined();
+    } finally {
+      second.database.close();
+      second.lock.release();
+    }
   });
 });

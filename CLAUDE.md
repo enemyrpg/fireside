@@ -74,6 +74,10 @@ which is CC BY-NC-SA 3.0 with its own LICENSE file.
   their rows, raw events and `external_snapshots` included (see
   `docs/decisions/0003-raw-events-and-projections.md` and "Deleting a user" in
   `docs/architecture.md`).
+- Changing a projection's rules for existing data bumps its `version`, and
+  either gives it a `recompute` or relies on the rebuild fallback. Existing
+  data is then recomputed at startup
+  (`docs/decisions/0017-projection-rule-changes-recompute-at-startup.md`).
 - Events are idempotent by `eventId` (UUIDv7). Never create duplicates
   (`docs/decisions/0003-raw-events-and-projections.md`).
 - All timestamps are UTC ISO 8601. Day/week grouping uses `TZ` from `.env`

@@ -40,8 +40,20 @@ export interface ProjectionContext {
 
 /** One derived view of the raw events, e.g. accounts or XP snapshots. */
 export interface Projection {
-  /** Short name, used in `projection_error` and logs. */
+  /** Short name, used in `projection_error`, logs and `projection_versions`. */
   readonly name: string;
+  /**
+   * Version of the rules `apply` derives rows with (default 1). Bump it when a
+   * change gives existing events other derived rows: databases built with an
+   * older version are then recomputed at startup (projections/versions.ts).
+   */
+  readonly version?: number;
+  /**
+   * Brings derived rows built with an older `version` up to date, inside the
+   * startup transaction. Without it, an outdated projection is brought up to
+   * date by a full rebuild.
+   */
+  recompute?(tx: Queryable, context: ProjectionContext): RecomputeResult;
   /** Updates derived tables for one event. The raw row is already stored. */
   apply(tx: Queryable, event: StoredEvent, context: ProjectionContext): void;
   /**
@@ -55,6 +67,14 @@ export interface Projection {
    * databases built in different orders can be compared.
    */
   snapshot(db: Queryable): unknown;
+}
+
+/** What `Projection.recompute` did. */
+export interface RecomputeResult {
+  /** SQL names of every table it may have changed (check-migration allows only these). */
+  tables: readonly string[];
+  /** Counts for the log, e.g. `{ sessions: 950 }`. */
+  counts: Record<string, number>;
 }
 
 /** The part of a pino/Fastify logger the projections use. */
@@ -277,33 +297,33 @@ export function reprocessFailed(db: Db, options: ProjectionOptions): ProjectionR
  * commits. Gives the same result as projecting the events as they arrived.
  */
 export function rebuildProjections(db: Db, options: ProjectionOptions): ProjectionResult {
-  options = withFixedClock(options);
-  return db.transaction(
-    (tx) => {
-      for (const projection of [...options.projections].reverse()) projection.reset(tx);
-      tx.update(events).set({ processedAt: null, projectionError: null }).run();
+  return db.transaction((tx) => rebuildProjectionsIn(tx, options), { behavior: 'immediate' });
+}
 
-      const total = emptyResult();
-      let after: Pick<EventRow, 'occurredAt' | 'eventId'> | undefined;
-      for (;;) {
-        const rows = tx
-          .select()
-          .from(events)
-          .where(
-            after &&
-              or(
-                gt(events.occurredAt, after.occurredAt),
-                and(eq(events.occurredAt, after.occurredAt), gt(events.eventId, after.eventId)),
-              ),
-          )
-          .orderBy(asc(events.occurredAt), asc(events.eventId))
-          .limit(CHUNK_SIZE)
-          .all();
-        if (rows.length === 0) return total;
-        addResult(total, projectRows(tx, rows, options));
-        after = rows[rows.length - 1];
-      }
-    },
-    { behavior: 'immediate' },
-  );
+/** `rebuildProjections` inside a transaction the caller holds. */
+export function rebuildProjectionsIn(tx: Queryable, options: ProjectionOptions): ProjectionResult {
+  options = withFixedClock(options);
+  for (const projection of [...options.projections].reverse()) projection.reset(tx);
+  tx.update(events).set({ processedAt: null, projectionError: null }).run();
+
+  const total = emptyResult();
+  let after: Pick<EventRow, 'occurredAt' | 'eventId'> | undefined;
+  for (;;) {
+    const rows = tx
+      .select()
+      .from(events)
+      .where(
+        after &&
+          or(
+            gt(events.occurredAt, after.occurredAt),
+            and(eq(events.occurredAt, after.occurredAt), gt(events.eventId, after.eventId)),
+          ),
+      )
+      .orderBy(asc(events.occurredAt), asc(events.eventId))
+      .limit(CHUNK_SIZE)
+      .all();
+    if (rows.length === 0) return total;
+    addResult(total, projectRows(tx, rows, options));
+    after = rows[rows.length - 1];
+  }
 }

@@ -85,6 +85,18 @@ if (preMigrateBackup !== undefined) {
   app.log.info({ file: preMigrateBackup }, 'Backup before migrating');
 }
 
+// Before listening, so ingest waits for it (the plugin retries).
+if (db.upgrade) {
+  app.log.info(
+    {
+      projections: db.upgrade.projections,
+      ...db.upgrade.counts,
+      durationMs: db.upgrade.durationMs,
+    },
+    'Recomputed projections after a rule change',
+  );
+}
+
 // One line at every start, with a count and no paths: after an upgrade it shows
 // that the existing files were made private.
 app.log.info({ tightened: permissions.tightened }, describeTightenResult(permissions));

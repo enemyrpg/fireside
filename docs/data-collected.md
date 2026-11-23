@@ -67,12 +67,12 @@ than what is listed here.
 
 ### Always (sessions)
 
-| Event               | Payload                                                                                                                      |
-| ------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `session.start`     | Your own display name, account type (normal, ironman, group ironman …), world, plugin version                                |
-| `session.heartbeat` | Every minute: region ID, world, world types, the world's location and activity from the world list, and whether you are idle |
-| `session.afk`       | Start and end of a period you were AFK (no input for the AFK threshold, 5 minutes by default)                                |
-| `session.end`       | Why it ended: logout, client closed or world hop                                                                             |
+| Event               | Payload                                                                                                                                                                                    |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `session.start`     | Your own display name, account type (normal, ironman, group ironman …), world, plugin version                                                                                              |
+| `session.heartbeat` | Every minute: region ID, world, world types, the world's location and activity from the world list, and whether you are idle (used to count ongoing AFK time before `session.afk` arrives) |
+| `session.afk`       | Start and end of a period you were AFK (no input for the AFK threshold, 5 minutes by default)                                                                                              |
+| `session.end`       | Why it ended: logout, client closed or world hop                                                                                                                                           |
 
 ### XP
 

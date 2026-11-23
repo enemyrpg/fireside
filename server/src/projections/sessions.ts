@@ -5,22 +5,37 @@ import type {
   SessionEndEvent,
   SessionStartEvent,
 } from '@fireside/shared';
-import { and, asc, desc, eq, isNotNull, isNull, lte, or } from 'drizzle-orm';
+import { and, asc, desc, eq, isNotNull, isNull, lte, or, sql } from 'drizzle-orm';
 import type { Db, Queryable } from '../db/index.js';
-import { accounts, events, sessionAfkPeriods, sessionHeartbeats, sessions } from '../db/schema.js';
+import {
+  accounts,
+  events,
+  sessionAfkEstimates,
+  sessionAfkPeriods,
+  sessionHeartbeats,
+  sessions,
+} from '../db/schema.js';
+import { weeklySummariesProjection } from './weekly-summaries.js';
 import { compareEventRows, type Projection, type Stored } from './framework.js';
 import { accountIdOf } from './lookup.js';
 import { syncSessionSummary } from './session-summaries.js';
 
-// `sessions`, `session_heartbeats` and `session_afk_periods`
-// (see docs/architecture.md#sessions).
+// `sessions`, `session_heartbeats`, `session_afk_periods` and
+// `session_afk_estimates` (see docs/architecture.md#sessions).
 //
-// Heartbeats and AFK periods are keyed inserts. The session row is refreshed
+// Heartbeats and AFK periods are keyed inserts. AFK estimates are rewritten
+// for the session on every refresh, from its idle heartbeats and AFK periods. The session row is refreshed
 // from its projected events on every `session.*` event, with one pure
 // function (`deriveSession`) that also decides the timeout from the clock.
 // The timeout job (`closeTimedOutSessions`) calls the same refresh, so a late
 // `session.end` or a late heartbeat just changes the inputs: it replaces a
 // timeout, extends it, or reopens the session.
+
+/**
+ * Rules version of this projection (see projections/versions.ts). 2: AFK
+ * estimated from idle heartbeats.
+ */
+export const SESSIONS_VERSION = 2;
 
 /** A session with no heartbeat for this long is closed with `timeout`. */
 export const SESSION_TIMEOUT_MS = 10 * 60_000;
@@ -86,6 +101,41 @@ export function afkSecondsWithin(periods: readonly TimeRange[], from: string, to
   }
   if (run) totalMs += run.end - run.start;
   return Math.floor(totalMs / 1000);
+}
+
+/**
+ * The AFK estimate of a session. Each run of consecutive idle heartbeats
+ * covers `[first, last]`, minus every part a real `session.afk` period
+ * (`[startedAt, endedAt)`) covers. The parts left with a length above zero are
+ * the estimate. The plugin sets `idle` only during an AFK period, so idle time
+ * after a real period's end belongs to a new period, even within one run.
+ */
+export function estimateAfkPeriods(
+  idleRuns: readonly TimeRange[],
+  realPeriods: readonly TimeRange[],
+): TimeRange[] {
+  const real = realPeriods
+    .map((period) => ({ start: Date.parse(period.startedAt), end: Date.parse(period.endedAt) }))
+    .filter((period) => period.start < period.end)
+    .sort((a, b) => a.start - b.start);
+  const estimates: TimeRange[] = [];
+  for (const run of idleRuns) {
+    let from = Date.parse(run.startedAt);
+    const to = Date.parse(run.endedAt);
+    for (const period of real) {
+      if (period.end <= from) continue;
+      if (period.start >= to) break;
+      if (period.start > from) estimates.push(rangeOf(from, period.start));
+      from = Math.max(from, period.end);
+      if (from >= to) break;
+    }
+    if (from < to) estimates.push(rangeOf(from, to));
+  }
+  return estimates;
+}
+
+function rangeOf(start: number, end: number): TimeRange {
+  return { startedAt: new Date(start).toISOString(), endedAt: new Date(end).toISOString() };
 }
 
 /**
@@ -170,6 +220,43 @@ function heartbeatAt(tx: Queryable, sessionId: string, which: 'first' | 'last') 
 }
 
 /**
+ * The session's runs of consecutive idle heartbeats (by `at`, then event ID),
+ * as `[first, last]`. Runs of one heartbeat have no length and are left out.
+ * Gaps and islands in SQL, so only the runs leave SQLite.
+ */
+function idleRuns(tx: Queryable, sessionId: string): TimeRange[] {
+  return tx.all<TimeRange>(sql`
+    SELECT min(at) AS startedAt, max(at) AS endedAt FROM (
+      SELECT at, idle,
+        row_number() OVER (ORDER BY at, event_id)
+          - row_number() OVER (PARTITION BY idle ORDER BY at, event_id) AS run
+      FROM ${sessionHeartbeats}
+      WHERE session_id = ${sessionId}
+    )
+    WHERE idle = 1
+    GROUP BY run
+    HAVING min(at) < max(at)
+    ORDER BY startedAt
+  `);
+}
+
+/** Replaces the session's AFK estimate rows. Returns the estimate. */
+function syncAfkEstimates(
+  tx: Queryable,
+  sessionId: string,
+  realPeriods: readonly TimeRange[],
+): TimeRange[] {
+  const estimates = estimateAfkPeriods(idleRuns(tx, sessionId), realPeriods);
+  tx.delete(sessionAfkEstimates).where(eq(sessionAfkEstimates.sessionId, sessionId)).run();
+  if (estimates.length > 0) {
+    tx.insert(sessionAfkEstimates)
+      .values(estimates.map((estimate) => ({ sessionId, ...estimate })))
+      .run();
+  }
+  return estimates;
+}
+
+/**
  * Recomputes the session row from its projected events (plus the event being
  * applied, if any). Deletes the row if no session event is visible. Returns
  * the row's derived columns, or `undefined` if it was deleted.
@@ -223,6 +310,7 @@ export function refreshSession(
     : (firstHeartbeat?.world ?? null);
   const lastHeartbeatAt =
     lastHeartbeat && lastHeartbeat.occurredAt > startedAt ? lastHeartbeat.occurredAt : startedAt;
+  const estimates = syncAfkEstimates(tx, sessionId, afkPeriods);
 
   const derived = deriveSession(
     {
@@ -233,7 +321,7 @@ export function refreshSession(
         at: end.occurredAt,
         reason: (JSON.parse(end.payload) as SessionEndEvent['payload']).reason,
       },
-      afkPeriods,
+      afkPeriods: [...afkPeriods, ...estimates],
     },
     now,
   );
@@ -295,6 +383,7 @@ export function closeTimedOutSessions(db: Db, now: Date): number {
 
 export const sessionsProjection: Projection = {
   name: 'sessions',
+  version: SESSIONS_VERSION,
 
   apply(tx, event, { now }) {
     if (!isSessionEventType(event.type)) return;
@@ -329,7 +418,24 @@ export const sessionsProjection: Projection = {
     refreshSession(tx, event.sessionId, now, event.eventId);
   },
 
+  recompute(tx, { now }) {
+    const ids = tx.select({ id: sessions.id, endedAt: sessions.endedAt }).from(sessions).all();
+    for (const { id, endedAt } of ids) {
+      // A session that times out now gets its summary, as in the timeout job.
+      if (refreshSession(tx, id, now)?.endReason === 'timeout' && endedAt === null) {
+        syncSessionSummary(tx, id);
+      }
+    }
+    // Weeks are a read cache of play time: empty it, the next read fills it.
+    weeklySummariesProjection.reset(tx);
+    return {
+      tables: ['sessions', 'session_afk_estimates', 'session_summaries', 'weekly_summaries'],
+      counts: { sessions: ids.length },
+    };
+  },
+
   reset(tx) {
+    tx.delete(sessionAfkEstimates).run();
     tx.delete(sessionHeartbeats).run();
     tx.delete(sessionAfkPeriods).run();
     tx.delete(sessions).run();
@@ -383,6 +489,15 @@ export const sessionsProjection: Projection = {
         })
         .from(sessionAfkPeriods)
         .orderBy(asc(sessionAfkPeriods.sessionId), asc(sessionAfkPeriods.eventId))
+        .all(),
+      afkEstimates: db
+        .select({
+          sessionId: sessionAfkEstimates.sessionId,
+          startedAt: sessionAfkEstimates.startedAt,
+          endedAt: sessionAfkEstimates.endedAt,
+        })
+        .from(sessionAfkEstimates)
+        .orderBy(asc(sessionAfkEstimates.sessionId), asc(sessionAfkEstimates.startedAt))
         .all(),
     };
   },

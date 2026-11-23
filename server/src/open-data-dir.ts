@@ -1,6 +1,13 @@
 import { acquireInstanceLock, type InstanceLock } from './backup/lock.js';
 import { backupBeforeMigrating, type PreMigrateOptions } from './backup/pre-migrate.js';
-import { databasePath, openDatabase, type Database, type OpenDatabaseOptions } from './db/index.js';
+import {
+  databasePath,
+  openDatabase,
+  type Database,
+  type DatabaseUpgrade,
+  type OpenDatabaseOptions,
+} from './db/index.js';
+import { projectionUpgrade } from './projections/versions.js';
 import {
   mergeTightenResults,
   tightenDataDir,
@@ -16,7 +23,8 @@ import {
 //    is copied;
 // 3. backup before migrating, of the file exactly as the previous version
 //    left it;
-// 4. migrate (and open);
+// 4. migrate (and open), then recompute projections whose rules changed, in
+//    the same transaction (projections/versions.ts);
 // 5. private once more, for a database (and its `-wal`) that was just made.
 // If a step fails, the later ones don't run and the lock is released. Step 2
 // and 5 never fail: what they can't change is returned for the log.
@@ -43,6 +51,8 @@ export interface OpenDataDirOptions {
   backupDir: string;
   /** Only tests change this. */
   migrationsFolder?: string;
+  /** Default: recompute outdated projections (`projectionUpgrade`). Only tests change this. */
+  upgrade?: DatabaseUpgrade;
 }
 
 export interface OpenedDataDir {
@@ -62,7 +72,7 @@ export interface OpenedDataDir {
  * error; `InstanceLockedError` means another process holds DATA_DIR.
  */
 export function openDataDir(
-  { dataDir, backupDir, migrationsFolder }: OpenDataDirOptions,
+  { dataDir, backupDir, migrationsFolder, upgrade = projectionUpgrade() }: OpenDataDirOptions,
   steps: DataDirSteps = DATA_DIR_STEPS,
 ): OpenedDataDir {
   const lock = steps.lock(dataDir);
@@ -73,11 +83,12 @@ export function openDataDir(
       dbFile,
       backupDir,
       ...(migrationsFolder === undefined ? {} : { migrationsFolder }),
+      upgradePending: upgrade.pending,
     });
-    const database = steps.migrate(
-      dbFile,
-      migrationsFolder === undefined ? {} : { migrationsFolder },
-    );
+    const database = steps.migrate(dbFile, {
+      ...(migrationsFolder === undefined ? {} : { migrationsFolder }),
+      upgrade,
+    });
     const permissions = mergeTightenResults(before, steps.makePrivate({ dataDir, backupDir }));
     return { lock, database, dbFile, preMigrateBackup, permissions };
   } catch (error) {

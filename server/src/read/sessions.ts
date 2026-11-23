@@ -18,7 +18,6 @@ import {
   kcObservations,
   lootEvents,
   lootItems,
-  sessionAfkPeriods,
   sessionSummaries,
   sessions,
   xpSnapshots,
@@ -26,13 +25,14 @@ import {
   type SessionSummaryRow,
 } from '../db/schema.js';
 import { bossKc } from '../projections/session-summaries.js';
+import { afkPeriodsOfSession } from './afk-periods.js';
 import { cursorParts, decodeCursor, encodeCursor } from './cursor.js';
 import { apiSource } from './loot.js';
 import { sessionCollectionLog, tiedClogItems } from './session-clog.js';
 import { gainStart, skillsOf } from './xp.js';
 
 // `GET …/sessions` and `GET /sessions/:sessionId`. Reads `sessions`,
-// `session_summaries`, `session_afk_periods`, `xp_snapshots`, `loot_events` and
+// `session_summaries`, `session_afk_periods` and `session_afk_estimates`, `xp_snapshots`, `loot_events` and
 // `kc_observations`, and for the collection log `clog_obtained`, `clog_reads` and
 // `clog_snapshots`.
 
@@ -246,11 +246,7 @@ function clippedAfkPeriods(db: Queryable, session: SessionRow): AfkPeriod[] {
   if (session.durationSeconds === 0) return [];
   const start = Date.parse(session.startedAt);
   const end = Date.parse(session.endedAt ?? session.lastHeartbeatAt);
-  const clipped = db
-    .select({ startedAt: sessionAfkPeriods.startedAt, endedAt: sessionAfkPeriods.endedAt })
-    .from(sessionAfkPeriods)
-    .where(eq(sessionAfkPeriods.sessionId, session.id))
-    .all()
+  const clipped = afkPeriodsOfSession(db, session.id)
     .map((period) => ({
       start: Math.max(Date.parse(period.startedAt), start),
       end: Math.min(Date.parse(period.endedAt), end),

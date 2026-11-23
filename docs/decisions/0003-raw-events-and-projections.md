@@ -33,6 +33,9 @@ destroy data.
 ## Consequences
 
 - Fixing a rule is a code change and a rebuild, never a data migration.
+  Refined by [0017](0017-projection-rule-changes-recompute-at-startup.md): the
+  change bumps the projection's version, and existing data is recomputed at
+  startup with no manual step.
 - A projection error never loses or rejects an event: it is marked and can be
   retried (`pnpm cli reprocess`).
 - Projections must not depend on arrival order, `received_at` or their own
