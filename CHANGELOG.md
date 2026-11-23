@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.1.1](https://github.com/enemyrpg/fireside/compare/v0.1.0...v0.1.1) (2026-11-23)
+
+
+### Bug fixes
+
+* online state and live polling across world hops ([#20](https://github.com/enemyrpg/fireside/issues/20)) ([9ad1ba8](https://github.com/enemyrpg/fireside/commit/9ad1ba8666f3bc44e93427d1c41f491d3addf967))
+* **server:** count ongoing AFK time as AFK ([#22](https://github.com/enemyrpg/fireside/issues/22)) ([46dd14a](https://github.com/enemyrpg/fireside/commit/46dd14a72cf20519821fcc5b0bc9ddc2498dc56a))
+* **web:** price movers follow the chosen bank tab ([#19](https://github.com/enemyrpg/fireside/issues/19)) ([69f113f](https://github.com/enemyrpg/fireside/commit/69f113f875f87e33a768a78797ad7d215b9f44d5))
+
+
+### Documentation
+
+* label guide ([#17](https://github.com/enemyrpg/fireside/issues/17)) ([f653c2f](https://github.com/enemyrpg/fireside/commit/f653c2f73f5ae14932b8818b1fc3c9022ddd61bb))
+
 ## 0.1.0 (2026-11-22)
 
 
