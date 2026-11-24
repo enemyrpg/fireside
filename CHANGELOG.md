@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/enemyrpg/fireside/compare/v0.1.2...v0.2.0) (2026-11-24)
+
+
+### Features
+
+* **server:** compress database backups ([#31](https://github.com/enemyrpg/fireside/issues/31)) ([3e2fc88](https://github.com/enemyrpg/fireside/commit/3e2fc88ed757fbf210fca2e8046b1dff85583212))
+
 ## [0.1.2](https://github.com/enemyrpg/fireside/compare/v0.1.1...v0.1.2) (2026-11-24)
 
 
