@@ -11,7 +11,7 @@ import {
   type SessionSummaryRow,
 } from '../db/schema.js';
 import type { Projection } from './framework.js';
-import { kcObservationOf } from './kc.js';
+import { kcObservationOf } from './kc-observation.js';
 import { lootTotals } from './loot.js';
 import { accountIdOf } from './lookup.js';
 
@@ -252,14 +252,6 @@ export function computeSessionSummary(tx: Queryable, sessionId: string): Summary
     .from(lootEvents)
     .where(eq(lootEvents.sessionId, sessionId))
     .get();
-  const bosses = tx
-    .selectDistinct({ boss: kcObservations.boss })
-    .from(kcObservations)
-    .where(eq(kcObservations.sessionId, sessionId))
-    .all();
-  const kc: Record<string, number> = {};
-  for (const { boss } of bosses) kc[boss] = bossGain(tx, sessionId, boss) ?? 0;
-
   return {
     ...xpContent(
       tx,
@@ -268,8 +260,20 @@ export function computeSessionSummary(tx: Queryable, sessionId: string): Summary
     ),
     lootGeValue: capLootValue(loot?.geValue ?? 0),
     lootCount: loot?.count ?? 0,
-    kcGainedByBoss: sortedJson(kc),
+    kcGainedByBoss: kcContent(tx, sessionId),
   };
+}
+
+/** `kc_gained_by_boss` of a session computed from scratch. */
+function kcContent(tx: Queryable, sessionId: string): string {
+  const bosses = tx
+    .selectDistinct({ boss: kcObservations.boss })
+    .from(kcObservations)
+    .where(eq(kcObservations.sessionId, sessionId))
+    .all();
+  const kc: Record<string, number> = {};
+  for (const { boss } of bosses) kc[boss] = bossGain(tx, sessionId, boss) ?? 0;
+  return sortedJson(kc);
 }
 
 /**
@@ -360,6 +364,35 @@ function updateSummary(
   }
 }
 
+/**
+ * Updates the gain for `boss` in a closed session that has, or had, an
+ * observation at `at`, and in the account's next session that saw the boss
+ * after it. Used for each KC observation, and by the kc projection for an
+ * observation it replaced (projections/kc.ts).
+ */
+export function refreshBossGain(
+  tx: Queryable,
+  accountId: number,
+  boss: string,
+  sessionId: string,
+  at: { observedAt: string; eventId: string },
+): void {
+  updateSummary(tx, sessionId, (summary) => ({
+    kcGainedByBoss: withBossGain(tx, sessionId, boss, summary.kcGainedByBoss),
+  }));
+  const next = nextKcSession(tx, accountId, boss, sessionId, at);
+  if (next !== undefined) {
+    updateSummary(tx, next, (summary) => ({
+      kcGainedByBoss: withBossGain(tx, next, boss, summary.kcGainedByBoss),
+    }));
+  }
+}
+
+/** Recomputes the KC gains of a closed session from scratch (kc rule changes). */
+export function recomputeKcGains(tx: Queryable, sessionId: string): void {
+  updateSummary(tx, sessionId, () => ({ kcGainedByBoss: kcContent(tx, sessionId) }));
+}
+
 export const sessionSummariesProjection: Projection = {
   name: 'session-summaries',
 
@@ -399,19 +432,10 @@ export const sessionSummariesProjection: Projection = {
     // `kc` events and `loot` events with a kill count.
     const observation = kcObservationOf(event);
     if (!observation) return;
-    const { boss } = observation;
-    updateSummary(tx, sessionId, (summary) => ({
-      kcGainedByBoss: withBossGain(tx, sessionId, boss, summary.kcGainedByBoss),
-    }));
-    const next = nextKcSession(tx, accountIdOf(tx, event), boss, sessionId, {
+    refreshBossGain(tx, accountIdOf(tx, event), observation.boss, sessionId, {
       observedAt: event.occurredAt,
       eventId: event.eventId,
     });
-    if (next !== undefined) {
-      updateSummary(tx, next, (summary) => ({
-        kcGainedByBoss: withBossGain(tx, next, boss, summary.kcGainedByBoss),
-      }));
-    }
   },
 
   reset(tx) {

@@ -124,6 +124,12 @@ be rebuilt from them.
   accounts and name history, XP snapshots, loot, kill counts and PBs, raid
   purples, sessions and their summaries, bank and potion storage, quests and
   diaries, pets, and mark weekly summaries for recomputation.
+- **One kill count observation per kill.** A kill usually sends a `kc` event
+  and a `loot` event with the same `killCount`. `kc_observations` keeps one row
+  per (account, normalized boss, kill count): a `kc` event before a loot
+  event, then one with a time or PB before one without, then the earliest
+  (`occurred_at`, `event_id`). Loot with no matching `kc` (e.g. chests with
+  another count message) still gives a row (`server/src/projections/kc.ts`).
 - **Order doesn't matter.** Events can arrive in any order (the plugin sends
   old batches after downtime). A projection must give the same result for the
   same set of events, whatever order they came in. Events are always ordered
@@ -174,7 +180,9 @@ A change to a projection's rules for existing events bumps its `version`
 At startup, after migrations and in the same transaction,
 `server/src/projections/versions.ts` brings every projection with an older
 stored version up to date. It uses the projection's `recompute` if it has one
-(sessions: refresh every session, then empty the `weekly_summaries` cache), and
+(sessions: refresh every session, then empty the `weekly_summaries` cache;
+kc: delete every observation that is not its kill's, recompute the KC gains of
+the sessions that saw an affected boss, then empty the weekly cache), and
 otherwise a full rebuild. Then it stores the current versions. The copy before
 migrating is taken first, and the server listens only afterwards, so ingest
 waits. `check-migration` allows the recomputed tables to differ and compares
