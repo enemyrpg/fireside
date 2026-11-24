@@ -10,15 +10,22 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
-import { gzipSync } from 'node:zlib';
+import { gunzipSync, gzipSync } from 'node:zlib';
 import BetterSqlite3 from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createApiKey } from '../auth/api-keys.js';
 import { createSecretBox, fileKeyStore, keyFilePath } from '../auth/secret-box.js';
 import { databasePath, openDatabase } from '../db/index.js';
 import { createBackup, InvalidDatabaseFileError, openCheckedDatabase } from './backup.js';
-import { listBackupFolderFiles, listBackups, removeLeftoverTempFiles } from './files.js';
+import * as files from './files.js';
+import {
+  listBackupFolderFiles,
+  listBackups,
+  moveIntoFreeName,
+  removeLeftoverTempFiles,
+} from './files.js';
 import * as gzip from './gzip.js';
+import * as retention from './retention.js';
 import { pruneBackups, ReferenceClock } from './retention.js';
 import { dumpTables, tempDir, unzipBackup, withBackup } from './testing.js';
 import { TEST_OWNER } from '../test-utils.js';
@@ -290,6 +297,72 @@ describe('createBackup', () => {
     expect(readdirSync(backupDir)).toEqual([fresh]);
   });
 
+  it('never overwrites a backup another process took under the same name meanwhile', async () => {
+    const { dbFile, backupDir } = setup();
+    mkdirSync(backupDir, { recursive: true });
+    const other = join(backupDir, `${N}-20261114-030000Z.db.gz`);
+    writeFileSync(other, 'the backup of another process');
+    // Both processes checked the name before either moved its file in.
+    const check = vi.spyOn(files, 'isBackupNameTaken').mockReturnValue(false);
+    // Retention would keep only the newest of the two (same day): left out here.
+    const prune = vi.spyOn(retention, 'pruneBackups').mockReturnValue([]);
+    try {
+      const result = await createBackup({
+        dbFile,
+        dir: backupDir,
+        keep: KEEP,
+        timeZone: 'UTC',
+        now: () => new Date('2026-11-14T03:00:00.000Z'),
+      });
+      expect(result.fileName).toBe(`${N}-20261114-030000Z-2.db.gz`);
+    } finally {
+      check.mockRestore();
+      prune.mockRestore();
+    }
+    expect(readFileSync(other, 'utf8')).toBe('the backup of another process');
+    expect(readdirSync(backupDir).sort()).toEqual(
+      [`${N}-20261114-030000Z-2.db.gz`, `${N}-20261114-030000Z.db.gz`].sort(),
+    );
+  });
+
+  it.each([
+    ['a wrong checksum', (gz: Buffer) => Buffer.concat([gz.subarray(0, -8), Buffer.alloc(8, 0)])],
+    ['a cut-off file', (gz: Buffer) => gz.subarray(0, Math.floor(gz.length / 2))],
+    ['a complete gzip of too little data', () => gzipSync(Buffer.from('not the whole database'))],
+  ])(
+    'fails, leaving nothing, when the compressed file reads back wrong (%s)',
+    async (_name, spoil) => {
+      const { dbFile, backupDir } = setup();
+      const real = gzip.gzipFile;
+      // The write itself reports no error, as with a silent storage fault.
+      const silent = vi.spyOn(gzip, 'gzipFile').mockImplementation(async (source, target) => {
+        await real(source, target);
+        writeFileSync(target, spoil(readFileSync(target)));
+      });
+      try {
+        await expect(
+          createBackup({ dbFile, dir: backupDir, keep: KEEP, timeZone: 'UTC' }),
+        ).rejects.toThrow(/compressed backup failed its check/);
+      } finally {
+        silent.mockRestore();
+      }
+      expect(readdirSync(backupDir)).toEqual([]);
+    },
+  );
+
+  it('reads every backup back before it counts', async () => {
+    const { dbFile, backupDir } = setup();
+    const verify = vi.spyOn(gzip, 'verifyGzipFile');
+    try {
+      const result = await createBackup({ dbFile, dir: backupDir, keep: KEEP, timeZone: 'UTC' });
+      expect(verify).toHaveBeenCalledTimes(1);
+      expect(verify.mock.calls[0]?.[1]).toBe(result.uncompressedBytes);
+      expect(gunzipSync(readFileSync(result.path)).length).toBe(result.uncompressedBytes);
+    } finally {
+      verify.mockRestore();
+    }
+  });
+
   it('removes only temp files older than an hour', () => {
     const { backupDir } = setup();
     mkdirSync(backupDir, { recursive: true });
@@ -338,5 +411,72 @@ describe('openCheckedDatabase', () => {
     other.exec('CREATE TABLE notes (text TEXT)');
     other.close();
     expect(() => openCheckedDatabase(path)).toThrow(/not a Fireside database/);
+  });
+});
+
+describe('moveIntoFreeName', () => {
+  const cleanups: (() => void)[] = [];
+  afterEach(() => {
+    for (const cleanup of cleanups.splice(0)) cleanup();
+  });
+
+  function folder() {
+    const { dir, remove } = tempDir();
+    cleanups.push(remove);
+    const temp = join(dir, `.${N}-backup-x.gz.tmp`);
+    const target = join(dir, `${N}-20261114-030000Z.db.gz`);
+    writeFileSync(temp, 'new');
+    return { dir, temp, target };
+  }
+
+  it('moves the file when the name is free, and refuses a taken name', () => {
+    const { dir, temp, target } = folder();
+    expect(moveIntoFreeName(temp, target)).toBe(true);
+    expect(readdirSync(dir)).toEqual([`${N}-20261114-030000Z.db.gz`]);
+
+    writeFileSync(temp, 'newer');
+    expect(moveIntoFreeName(temp, target)).toBe(false);
+    expect(readFileSync(target, 'utf8')).toBe('new');
+    expect(readFileSync(temp, 'utf8')).toBe('newer');
+  });
+
+  it('falls back to check-then-rename on a file system without hard links', () => {
+    const noLinks = () => {
+      throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' });
+    };
+    const { temp, target } = folder();
+    expect(moveIntoFreeName(temp, target, noLinks)).toBe(true);
+    expect(readFileSync(target, 'utf8')).toBe('new');
+    expect(existsSync(temp)).toBe(false);
+
+    writeFileSync(temp, 'newer');
+    expect(moveIntoFreeName(temp, target, noLinks)).toBe(false);
+    expect(readFileSync(target, 'utf8')).toBe('new');
+  });
+
+  it('passes on other errors', () => {
+    const { temp, target } = folder();
+    const full = () => {
+      throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
+    };
+    expect(() => moveIntoFreeName(temp, target, full)).toThrow(/ENOSPC/);
+    expect(existsSync(temp)).toBe(true);
+  });
+});
+
+describe('listBackups', () => {
+  it('leaves out a backup unpacked in place next to its .gz, but not an older plain backup', () => {
+    const { dir, remove } = tempDir();
+    try {
+      writeFileSync(join(dir, `${N}-20261114-030000Z.db.gz`), 'x'.repeat(10));
+      writeFileSync(join(dir, `${N}-20261114-030000Z.db`), 'x'.repeat(100));
+      writeFileSync(join(dir, `${N}-20261101-030000Z.db`), 'x'.repeat(50));
+      expect(listBackups(dir).map(({ fileName, sizeBytes }) => ({ fileName, sizeBytes }))).toEqual([
+        { fileName: `${N}-20261114-030000Z.db.gz`, sizeBytes: 10 },
+        { fileName: `${N}-20261101-030000Z.db`, sizeBytes: 50 },
+      ]);
+    } finally {
+      remove();
+    }
   });
 });

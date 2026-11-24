@@ -1,4 +1,14 @@
-import { closeSync, existsSync, fsyncSync, openSync, readdirSync, rmSync, statSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  linkSync,
+  openSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { BRANDING } from '@fireside/shared';
 
@@ -12,7 +22,9 @@ import { BRANDING } from '@fireside/shared';
 // raw) and taken before migrations (`fireside-pre-migrate-….db`) are not
 // backups: the status and `restore` ignore them, and the daily, weekly and
 // monthly levels never keep them. Retention deletes them after the max age
-// (retention.ts). No other file in the folder is ever deleted.
+// (retention.ts). A backup unpacked in place (`gunzip -k`) has a backup's
+// name, so retention deletes it too. No other file in the folder is ever
+// deleted.
 
 const NAME = BRANDING.shortName;
 const BACKUP_NAME = new RegExp(`^${NAME}-(\\d{8})-(\\d{6})Z(?:-(\\d+))?\\.db(?:\\.gz)?$`);
@@ -63,6 +75,36 @@ function stamp(ms: number): string {
 /** Name of a backup taken at `ms`. `copy` > 1 for a second backup in the same second. */
 export function backupFileName(ms: number, copy = 1): string {
   return `${NAME}-${stamp(ms)}${copy > 1 ? `-${String(copy)}` : ''}.db.gz`;
+}
+
+/** Error codes of a file system that has no hard links (some network and FAT file systems). */
+const NO_HARD_LINKS = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS']);
+
+/**
+ * Moves the finished temp file `temp` to `target` only if `target` doesn't
+ * exist yet: two processes (the server and `pnpm cli backup`) that pick the
+ * same name never overwrite each other's backup, as `rename` would. Returns
+ * false when the name is taken; `temp` is then still there. A hard link is
+ * atomic and fails if the name exists; on a file system without hard links
+ * it falls back to checking first, then renaming.
+ */
+export function moveIntoFreeName(
+  temp: string,
+  target: string,
+  link: (existing: string, newPath: string) => void = linkSync,
+): boolean {
+  try {
+    link(temp, target);
+  } catch (error) {
+    const code = error instanceof Error && 'code' in error ? error.code : undefined;
+    if (code === 'EEXIST') return false;
+    if (typeof code !== 'string' || !NO_HARD_LINKS.has(code)) throw error;
+    if (existsSync(target)) return false;
+    renameSync(temp, target);
+    return true;
+  }
+  rmSync(temp, { force: true });
+  return true;
 }
 
 /**
@@ -187,7 +229,12 @@ export function newestFirst(
   );
 }
 
-/** Backups in `dir`, newest first. An empty list if the folder doesn't exist. */
+/**
+ * Backups in `dir`, newest first. An empty list if the folder doesn't exist.
+ * A `….db` next to the `….db.gz` of the same name is that backup unpacked by
+ * hand (`gunzip -k`), not another backup: it is left out, so the status
+ * doesn't count it. Retention still deletes it like a backup (retention.ts).
+ */
 export function listBackups(dir: string): BackupEntry[] {
   let names: string[];
   try {
@@ -196,10 +243,12 @@ export function listBackups(dir: string): BackupEntry[] {
     if (isNotFound(error)) return [];
     throw error;
   }
+  const present = new Set(names);
   const entries: BackupEntry[] = [];
   for (const fileName of names) {
     const createdAtMs = parseBackupFileName(fileName);
     if (createdAtMs === undefined) continue;
+    if (fileName.endsWith('.db') && present.has(`${fileName}.gz`)) continue;
     try {
       const stats = statSync(join(dir, fileName));
       if (stats.isFile()) entries.push({ fileName, createdAtMs, sizeBytes: stats.size });

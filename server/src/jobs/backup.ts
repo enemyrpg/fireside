@@ -46,10 +46,23 @@ export interface BackupJobState {
   lastError: { at: Date; message: string } | null;
 }
 
+/**
+ * How long shutdown waits for a backup that is running before it stops it.
+ * Well inside Docker's `stop_grace_period` (30 s in docker-compose.yml).
+ */
+export const BACKUP_SHUTDOWN_WAIT_MS = 10_000;
+
 export interface BackupJob extends RunningJob {
   state(): BackupJobState;
-  /** Resolves when the backup that is running (if any) has finished. For tests and shutdown. */
+  /** Resolves when the backup that is running (if any) has finished. */
   idle(): Promise<void>;
+  /**
+   * Stops the job, then waits for a backup that is running, at most
+   * `waitMs`. After that it is stopped: it leaves no backup and removes its
+   * temp files. Resolves when nothing of the job touches the backup folder
+   * any more, so the server may release the instance lock.
+   */
+  shutdown(waitMs?: number): Promise<void>;
 }
 
 /**
@@ -87,6 +100,8 @@ export function startBackupJob({
   // The backup in flight, if any. Compressing takes a while on a large
   // database: a tick meanwhile doesn't start a second one.
   let running: Promise<void> | undefined;
+  // Stops the backup in flight at shutdown.
+  const abort = new AbortController();
 
   const backupOnce = async (reason: 'startup' | 'scheduled') => {
     try {
@@ -97,6 +112,7 @@ export function startBackupJob({
         timeZone,
         now,
         onClockAhead,
+        signal: abort.signal,
       });
       lastError = null;
       log.info(
@@ -112,13 +128,17 @@ export function startBackupJob({
         'Backup done',
       );
     } catch (error) {
+      if (abort.signal.aborted) {
+        log.warn({ reason }, 'Backup stopped: the server is shutting down');
+        return;
+      }
       lastError = { at: now(), message: errorMessage(error) };
       log.error({ err: error, reason }, 'Backup failed');
     }
   };
 
   const runBackup = (reason: 'startup' | 'scheduled') => {
-    if (running) return;
+    if (running || stopped) return;
     running = backupOnce(reason).finally(() => {
       running = undefined;
     });
@@ -175,6 +195,25 @@ export function startBackupJob({
     }),
     idle: async () => {
       await running;
+    },
+    async shutdown(waitMs = BACKUP_SHUTDOWN_WAIT_MS) {
+      stopped = true;
+      if (timer) clearInterval(timer);
+      const inFlight = running;
+      if (!inFlight) return;
+      let waitTimer: NodeJS.Timeout | undefined;
+      const waited = new Promise<'timeout'>((resolve) => {
+        waitTimer = setTimeout(() => {
+          resolve('timeout');
+        }, waitMs);
+      });
+      const outcome = await Promise.race([inFlight.then(() => 'done' as const), waited]);
+      clearTimeout(waitTimer);
+      if (outcome === 'timeout') {
+        abort.abort();
+        // createBackup removes its temp files before it settles.
+        await inFlight;
+      }
     },
   };
 }

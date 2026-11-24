@@ -558,7 +558,7 @@ While the server runs, it backs up the database every day at `BACKUP_TIME`
 (default 04:00 in `TZ`), and when it starts if the newest backup is more than
 24 hours old. Backups are safe while the plugin sends data (SQLite
 `VACUUM INTO`, a consistent snapshot), and each one is checked with
-`PRAGMA integrity_check` before it counts. **Settings → Server** shows the
+`PRAGMA integrity_check`, and read back after compression, before it counts. **Settings → Server** shows the
 last backup, how many are kept, and the last error if one failed.
 
 Backups are gzipped and named `fireside-<YYYYMMDD>-<HHMMSS>Z.db.gz` (UTC) in
@@ -566,7 +566,9 @@ Backups are gzipped and named `fireside-<YYYYMMDD>-<HHMMSS>Z.db.gz` (UTC) in
 before compression (`fireside-<…>Z.db`) still count, age out the same way and
 restore as before. While a backup is written it has a temporary name
 (`.fireside-backup-….tmp`): a backup that is interrupted (a crash, a full disk)
-never counts, and its temporary files are removed an hour later.
+never counts, and its temporary files are removed an hour later. When the
+server stops during a backup, it waits up to 10 seconds for it to finish,
+then stops it, and that backup doesn't count.
 
 **Which ones are kept.** The newest backup of each of the last 7 days, 4 ISO
 weeks and 6 months (`BACKUP_KEEP_*`), in `TZ`. The newest backup is always
@@ -604,7 +606,8 @@ sqlite3 -readonly ~/fireside-inspect/fireside-20261114-030000Z.db
 ```
 
 Don't unpack inside `BACKUP_DIR`: there the unpacked file has a backup's name,
-and retention deletes it after the next backup (the `.gz` is kept). Delete the
+and retention deletes it after the next backup (the `.gz` is kept). Settings →
+Server doesn't count it as another backup. Delete the
 copy when you are done; it holds everything the database does.
 
 ### Disk space
@@ -647,6 +650,11 @@ Restore replaces the database with a backup:
    `fireside-pre-restore-<time>.db` in `BACKUP_DIR`, until it ages out like
    the other backups.
 3. Start the server again.
+
+If a restore is interrupted (Ctrl-C, a crash), nothing was changed unless it
+said "Restored". Its temporary files in `DATA_DIR` (`.fireside.db.restore-…`)
+are removed the next time the server starts or `pnpm cli` runs with the
+server stopped.
 
 If the restored database has users with 2FA, `fireside.key` must be in
 `DATA_DIR` ([The two-factor key](#the-two-factor-key-firesidekey)).

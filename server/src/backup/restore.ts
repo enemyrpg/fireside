@@ -67,6 +67,32 @@ function removeWithSideFiles(path: string): void {
   for (const suffix of ['', ...SIDE_FILES]) rmSync(path + suffix, { force: true });
 }
 
+/** The temp files a restore writes in DATA_DIR: the copy that becomes the database, and the unpacked backup. */
+function restoreTempFiles(dataDir: string): { copy: string; unzipped: string } {
+  const name = basename(databasePath(dataDir));
+  return {
+    copy: join(dataDir, `.${name}.restore-tmp`),
+    unzipped: join(dataDir, `.${name}.restore-gunzip-tmp`),
+  };
+}
+
+/**
+ * Removes what an interrupted restore (Ctrl-C, a crash) left in DATA_DIR:
+ * database-sized temp files that nothing else would ever delete. Only with
+ * the instance lock held, so no restore is running. Returns the removed names.
+ */
+export function removeLeftoverRestoreFiles(dataDir: string): string[] {
+  const removed: string[] = [];
+  for (const path of Object.values(restoreTempFiles(dataDir))) {
+    for (const suffix of ['', ...SIDE_FILES]) {
+      if (!existsSync(path + suffix)) continue;
+      rmSync(path + suffix, { force: true });
+      removed.push(basename(path + suffix));
+    }
+  }
+  return removed;
+}
+
 export async function restoreBackup({
   file,
   dataDir,
@@ -89,8 +115,7 @@ export async function restoreBackup({
     // what it can't change when it starts.
     tightenDataDir({ dataDir, backupDir });
     // 2–4: decompress, check the backup and copy it into DATA_DIR.
-    const temp = join(dataDir, `.${basename(dbFile)}.restore-tmp`);
-    const unzipped = join(dataDir, `.${basename(dbFile)}.restore-gunzip-tmp`);
+    const { copy: temp, unzipped } = restoreTempFiles(dataDir);
     removeWithSideFiles(temp);
     removeWithSideFiles(unzipped);
     let migrationsApplied: number;

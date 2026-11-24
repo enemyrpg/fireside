@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { describeTightenResult, tightenDataDir, tightenWarnings } from '../tighten-data-dir.js';
 import { acquireInstanceLock, InstanceLockedError, type InstanceLock } from '../backup/lock.js';
 import { backupBeforeMigrating, PreMigrateBackupError } from '../backup/pre-migrate.js';
+import { removeLeftoverRestoreFiles } from '../backup/restore.js';
 import {
   databasePath,
   openDatabase,
@@ -83,6 +84,11 @@ export class CliDataDir {
    */
   private makePrivate(): void {
     if (this.running) return;
+    // With the lock, as the server does at startup (open-data-dir.ts).
+    const removed = removeLeftoverRestoreFiles(this.dataDir);
+    if (removed.length > 0) {
+      this.log(`Removed files left by an interrupted restore: ${removed.join(', ')}`);
+    }
     const { backupDir = join(this.dataDir, 'backups') } = this.openOptions;
     const result = tightenDataDir({ dataDir: this.dataDir, backupDir });
     if (result.tightened > 0) this.log(describeTightenResult(result));

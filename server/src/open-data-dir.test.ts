@@ -69,15 +69,23 @@ describe('openDataDir (server startup)', () => {
           },
         };
       },
+      removeRestoreLeftovers: wrap('removeRestoreLeftovers', DATA_DIR_STEPS.removeRestoreLeftovers),
       makePrivate: wrap('makePrivate', DATA_DIR_STEPS.makePrivate),
       backupBeforeMigrating: wrap('backupBeforeMigrating', DATA_DIR_STEPS.backupBeforeMigrating),
       migrate: wrap('migrate', DATA_DIR_STEPS.migrate),
     };
   }
 
-  const ORDER = ['lock', 'makePrivate', 'backupBeforeMigrating', 'migrate', 'makePrivate'];
+  const ORDER = [
+    'lock',
+    'removeRestoreLeftovers',
+    'makePrivate',
+    'backupBeforeMigrating',
+    'migrate',
+    'makePrivate',
+  ];
 
-  it('runs lock → private → backup before migrating → migrate → private', () => {
+  it('runs lock → restore leftovers → private → backup before migrating → migrate → private', () => {
     const calls: string[] = [];
     const opened = openDataDir({ dataDir, backupDir }, recordingSteps(calls));
     expect(calls).toEqual(ORDER);
@@ -133,6 +141,26 @@ describe('openDataDir (server startup)', () => {
       expect(copy).toMatch(new RegExp(`${N}-pre-migrate-\\d{8}-\\d{6}Z\\.db$`));
       expect(tables(copy)).not.toContain('future_feature');
       expect(tables(opened.dbFile)).toContain('future_feature');
+    } finally {
+      opened.database.close();
+      opened.lock.release();
+    }
+  });
+
+  it('removes what an interrupted restore left in DATA_DIR, and nothing else', () => {
+    mkdirSync(dataDir);
+    const leftovers = [
+      `.${N}.db.restore-gunzip-tmp`,
+      `.${N}.db.restore-tmp`,
+      `.${N}.db.restore-tmp-journal`,
+    ];
+    for (const name of [...leftovers, 'notes.txt']) writeFileSync(join(dataDir, name), 'x');
+
+    const opened = openDataDir({ dataDir, backupDir });
+    try {
+      expect(opened.removedRestoreFiles.sort()).toEqual([...leftovers].sort());
+      for (const name of leftovers) expect(existsSync(join(dataDir, name))).toBe(false);
+      expect(existsSync(join(dataDir, 'notes.txt'))).toBe(true);
     } finally {
       opened.database.close();
       opened.lock.release();

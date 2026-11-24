@@ -2,11 +2,14 @@ import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { backupStatusResponseSchema, BRANDING } from '@fireside/shared';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { buildApp } from '../app.js';
 import * as backupModule from '../backup/backup.js';
-import { backupFileName, preMigrateFileName } from '../backup/files.js';
+import { backupFileName, listBackups, preMigrateFileName } from '../backup/files.js';
+import * as gzip from '../backup/gzip.js';
 import { tempDir } from '../backup/testing.js';
 import { loadConfig, type BackupConfig } from '../config.js';
 import { databasePath, openDatabase } from '../db/index.js';
+import { testConfig } from '../test-utils.js';
 import { backupStatus, nextBackupTime, startBackupJob } from './backup.js';
 
 const N = BRANDING.shortName;
@@ -263,5 +266,104 @@ describe('backup job', () => {
     clock.now = new Date('2026-11-16T12:00:00.000Z');
     vi.advanceTimersByTime(10 * 60_000);
     expect(status(s).count).toBe(1);
+  });
+
+  /** A createBackup that waits for `release()` before it does the real work. */
+  function gatedBackups() {
+    const real = backupModule.createBackup;
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let started: () => void = () => undefined;
+    const startedPromise = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const spy = vi.spyOn(backupModule, 'createBackup').mockImplementation(async (options) => {
+      started();
+      await gate;
+      return real(options);
+    });
+    cleanups.push(() => {
+      spy.mockRestore();
+    });
+    return { release, started: startedPromise };
+  }
+
+  it('shutdown waits for a backup that is running, and nothing runs after it', async () => {
+    const s = setup();
+    const { release, started } = gatedBackups();
+    const job = start(s, { now: new Date('2026-11-14T12:00:00.000Z') });
+    await started;
+
+    let done = false;
+    const shutdown = job.shutdown(60_000).then(() => {
+      done = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(done).toBe(false);
+
+    release();
+    await shutdown;
+    expect(listBackups(s.config.backup.dir).map((b) => b.fileName)).toEqual([
+      `${N}-20261114-120000Z.db.gz`,
+    ]);
+    expect(readdirSync(s.config.backup.dir)).toEqual([`${N}-20261114-120000Z.db.gz`]);
+  });
+
+  it('shutdown stops a backup that runs too long, leaving no backup and no temp files', async () => {
+    const s = setup();
+    // Compressing that never ends by itself, but stops when told to.
+    const slow = vi.spyOn(gzip, 'gzipFile').mockImplementation((_source, target, signal) => {
+      writeFileSync(target, 'half');
+      return new Promise((_resolve, reject) => {
+        signal?.addEventListener('abort', () => {
+          reject(signal.reason as Error);
+        });
+      });
+    });
+    cleanups.push(() => {
+      slow.mockRestore();
+    });
+    const job = start(s, { now: new Date('2026-11-14T12:00:00.000Z') });
+    await vi.waitFor(() => {
+      expect(slow).toHaveBeenCalled();
+    });
+
+    await job.shutdown(50);
+    expect(readdirSync(s.config.backup.dir)).toEqual([]);
+    expect(job.state().lastError).toBeNull();
+    expect(s.logs.at(-1)).toMatchObject({
+      level: 'warn',
+      msg: 'Backup stopped: the server is shutting down',
+    });
+  });
+
+  it('the server waits for a running backup before it closes (and releases the lock)', async () => {
+    const s = setup();
+    const { release, started } = gatedBackups();
+    const database = openDatabase(s.dbFile);
+    const app = buildApp({
+      db: database,
+      dbFile: s.dbFile,
+      config: testConfig({ DATA_DIR: s.config.dataDir, TZ: OSLO }),
+      jobs: true,
+    });
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    // The startup backup (there is none yet).
+    await started;
+
+    let closed = false;
+    const closing = app.close().then(() => {
+      closed = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(closed).toBe(false);
+
+    release();
+    await closing;
+    // Finished before the server closed: renamed, pruned, no temp files.
+    expect(readdirSync(s.config.backup.dir)).toHaveLength(1);
+    expect(listBackups(s.config.backup.dir)).toHaveLength(1);
   });
 });

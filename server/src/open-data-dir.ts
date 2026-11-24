@@ -1,5 +1,6 @@
 import { acquireInstanceLock, type InstanceLock } from './backup/lock.js';
 import { backupBeforeMigrating, type PreMigrateOptions } from './backup/pre-migrate.js';
+import { removeLeftoverRestoreFiles } from './backup/restore.js';
 import {
   databasePath,
   openDatabase,
@@ -18,20 +19,24 @@ import {
 // How the server opens DATA_DIR at startup. The order matters and is tested:
 // 1. instance lock: one server per DATA_DIR, so nothing below runs while
 //    another server (perhaps from another branch) owns the database;
-// 2. private: the folders `0700` and our files in
+// 2. remove what an interrupted `restore` left in DATA_DIR (restore.ts):
+//    with the lock, no restore can be running;
+// 3. private: the folders `0700` and our files in
 //    them `0600`, also the ones from before this existed, before anything
 //    is copied;
-// 3. backup before migrating, of the file exactly as the previous version
+// 4. backup before migrating, of the file exactly as the previous version
 //    left it;
-// 4. migrate (and open), then recompute projections whose rules changed, in
+// 5. migrate (and open), then recompute projections whose rules changed, in
 //    the same transaction (projections/versions.ts);
-// 5. private once more, for a database (and its `-wal`) that was just made.
-// If a step fails, the later ones don't run and the lock is released. Step 2
-// and 5 never fail: what they can't change is returned for the log.
+// 6. private once more, for a database (and its `-wal`) that was just made.
+// If a step fails, the later ones don't run and the lock is released. Step 3
+// and 6 never fail: what they can't change is returned for the log.
 
 /** The steps, replaceable in tests to check the order. */
 export interface DataDirSteps {
   lock: (dataDir: string) => InstanceLock;
+  /** Returns the removed file names, for the log. */
+  removeRestoreLeftovers: (dataDir: string) => string[];
   /** Runs twice: before the backup and after migrating. */
   makePrivate: (options: TightenOptions) => TightenResult;
   backupBeforeMigrating: (options: PreMigrateOptions) => string | undefined;
@@ -40,6 +45,7 @@ export interface DataDirSteps {
 
 export const DATA_DIR_STEPS: DataDirSteps = {
   lock: acquireInstanceLock,
+  removeRestoreLeftovers: removeLeftoverRestoreFiles,
   makePrivate: tightenDataDir,
   backupBeforeMigrating,
   migrate: openDatabase,
@@ -64,10 +70,12 @@ export interface OpenedDataDir {
   preMigrateBackup: string | undefined;
   /** How many paths were made private, and which could not be (for the log). */
   permissions: TightenResult;
+  /** Temp files of an interrupted restore that were removed (for the log). */
+  removedRestoreFiles: string[];
 }
 
 /**
- * Takes the instance lock, makes the folders and files private, backs up before migrating, opens (migrates) the database
+ * Takes the instance lock, removes an interrupted restore's temp files, makes the folders and files private, backs up before migrating, opens (migrates) the database
  * and makes what that created private, in that order. Throws the first step's
  * error; `InstanceLockedError` means another process holds DATA_DIR.
  */
@@ -78,6 +86,7 @@ export function openDataDir(
   const lock = steps.lock(dataDir);
   try {
     const dbFile = databasePath(dataDir);
+    const removedRestoreFiles = steps.removeRestoreLeftovers(dataDir);
     const before = steps.makePrivate({ dataDir, backupDir });
     const preMigrateBackup = steps.backupBeforeMigrating({
       dbFile,
@@ -90,7 +99,7 @@ export function openDataDir(
       upgrade,
     });
     const permissions = mergeTightenResults(before, steps.makePrivate({ dataDir, backupDir }));
-    return { lock, database, dbFile, preMigrateBackup, permissions };
+    return { lock, database, dbFile, preMigrateBackup, permissions, removedRestoreFiles };
   } catch (error) {
     lock.release();
     throw error;

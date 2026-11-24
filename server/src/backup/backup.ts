@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { closeSync, openSync, readSync, renameSync, rmSync, statSync } from 'node:fs';
+import { closeSync, openSync, readSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { BRANDING } from '@fireside/shared';
 import BetterSqlite3 from 'better-sqlite3';
@@ -12,10 +12,11 @@ import {
   isBackupNameTaken,
   listBackups,
   markWrittenThisRun,
+  moveIntoFreeName,
   TEMP_PREFIX,
   TEMP_SUFFIX,
 } from './files.js';
-import { gzipFile } from './gzip.js';
+import { gzipFile, verifyGzipFile } from './gzip.js';
 import { pruneBackups, type ClockAheadHandler } from './retention.js';
 
 // Backups use `VACUUM INTO` on a separate read-only connection:
@@ -31,9 +32,10 @@ import { pruneBackups, type ClockAheadHandler } from './retention.js';
 // doesn't block the server. The duration is logged.
 //
 // Steps, all in BACKUP_DIR: `VACUUM INTO` a temp file (`….db.tmp`), integrity
-// check, gzip it into a second temp file (`….gz.tmp`), rename that to the
-// final name once the gzip stream has finished and is on disk, then remove the
-// uncompressed temp. Both temp files exist for a moment, so a backup needs
+// check, gzip it into a second temp file (`….gz.tmp`), read that back through
+// gunzip (CRC-32 and length), move it to the final name once it is on disk
+// and checked (never over an existing file), then remove the uncompressed
+// temp. Both temp files exist for a moment, so a backup needs
 // free space for the database plus its compressed copy. A backup interrupted
 // at any point leaves only temp files, which never count as backups and which
 // retention removes.
@@ -143,6 +145,8 @@ export interface BackupOptions {
   now?: Clock;
   /** Called once per process when the clock is more than a day ahead of the backups. */
   onClockAhead?: ClockAheadHandler;
+  /** Stops the backup (server shutdown): it then fails, leaving no backup and no temp files. */
+  signal?: AbortSignal;
 }
 
 export interface BackupResult {
@@ -174,6 +178,7 @@ export async function createBackup({
   timeZone,
   now = systemClock,
   onClockAhead,
+  signal,
 }: BackupOptions): Promise<BackupResult> {
   const started = now();
   const startedMs = performance.now();
@@ -207,15 +212,23 @@ export async function createBackup({
     openCheckedDatabase(plainTemp).close();
     uncompressedBytes = statSync(plainTemp).size;
 
-    await gzipFile(plainTemp, gzipTemp);
+    await gzipFile(plainTemp, gzipTemp, signal);
+    // A write that went wrong without an error must not count as a backup.
+    await verifyGzipFile(gzipTemp, uncompressedBytes, signal);
+    signal?.throwIfAborted();
 
     // A second backup in the same second (e.g. manual right after scheduled)
-    // gets a suffix. Chosen after the gzip, so a backup that ran meanwhile is seen.
+    // gets a suffix. The move fails instead of overwriting when another
+    // process took the name between the check and the move.
     let copy = 1;
-    while (isBackupNameTaken(dir, started.getTime(), copy)) copy++;
-    fileName = backupFileName(started.getTime(), copy);
-    final = join(dir, fileName);
-    renameSync(gzipTemp, final);
+    for (;;) {
+      if (!isBackupNameTaken(dir, started.getTime(), copy)) {
+        fileName = backupFileName(started.getTime(), copy);
+        final = join(dir, fileName);
+        if (moveIntoFreeName(gzipTemp, final)) break;
+      }
+      copy++;
+    }
     markWrittenThisRun(fileName);
     fsyncPath(dir);
   } catch (error) {
