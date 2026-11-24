@@ -437,23 +437,23 @@ describe('Bank', () => {
     expect((await card('Most valuable')).getByText('GE')).toBeTruthy();
   });
 
-  it('shows potion storage with doses, and hides it for an account without one', async () => {
+  it('shows potion storage with doses', async () => {
     mockBank('1');
-    const { queryClient } = renderApp('/1/bank');
+    renderApp('/1/bank');
     const potions = await card('Potion storage');
     const grid = potions.getByRole('img');
     expect(grid.getAttribute('aria-label')).toBe(
       'Potion storage: 2 potions, 319 doses, worth 985K gp',
     );
     expect(grid.textContent).toContain('312');
-    queryClient.clear();
+  });
 
+  it('hides potion storage for an account without one', async () => {
     mockBank('1', { potions: potionsNoData });
     renderApp('/1/bank');
-    await waitFor(() => {
-      expect(screen.getAllByRole('heading', { name: /^Carried/ }).length).toBeGreaterThan(1);
-    });
-    expect(screen.getAllByRole('heading', { name: /^Potion storage/ })).toHaveLength(1);
+    // The cards, Carried among them, only show once the bank and potion storage have loaded.
+    await card('Carried');
+    expect(screen.queryByRole('heading', { name: /^Potion storage/ })).toBeNull();
   });
 
   it('shows what was carried: the inventory as 4 × 7 and the equipment like the game', async () => {

@@ -1,7 +1,14 @@
-import { cleanup } from '@testing-library/react';
+import { cleanup, configure } from '@testing-library/react';
 import { afterEach, vi } from 'vitest';
 import { resetServerStatus } from '@/api/server-status';
 import { resetScrollKeys } from '@/routing/scroll-key';
+
+// `find…` and `waitFor` give up after 1 s by default, which a busy CI runner can
+// exceed. They return as soon as the element is there, so this doesn't slow down
+// passing tests. It stays under Vitest's 5 s test timeout, so a query that never
+// matches still fails with Testing Library's message (what is in the DOM), not
+// a bare "Test timed out".
+configure({ asyncUtilTimeout: 3_000 });
 
 // jsdom lacks these browser APIs, which Radix and Sonner use.
 if (typeof window.matchMedia !== 'function') {
