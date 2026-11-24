@@ -37,9 +37,16 @@ function accountDetails(account: AccountSummary): string {
 
 /**
  * Account switcher in the top bar. Changing account keeps the current page and
- * its query string.
+ * its query string. `compact`: the PC top bar at 1100 px and narrower, which
+ * shows only the name (capped, with an ellipsis), not the account type.
  */
-export function AccountSwitcher({ scope }: { scope: AccountScope }) {
+export function AccountSwitcher({
+  scope,
+  compact = false,
+}: {
+  scope: AccountScope;
+  compact?: boolean;
+}) {
   // Polls while an account shows as online, so a logout shows within one poll.
   const accounts = useAccounts({ live: anyOnline }).data?.accounts ?? [];
   const sorted = [...accounts].sort((a, b) => a.id - b.id);
@@ -77,14 +84,22 @@ export function AccountSwitcher({ scope }: { scope: AccountScope }) {
           aria-label={`Choose account: ${shownName}${shownType}`}
           // Moves between the top bar and the page header (useCarryShellFocus).
           data-shell-control=""
-          className="flex h-11 min-w-0 items-center gap-2 rounded-full border border-border bg-card px-3.5 font-medium hover:border-accent desk:h-9 desk:min-w-[190px] desk:rounded-lg desk:px-3"
+          className={cn(
+            'flex h-11 min-w-0 items-center gap-2 rounded-full border border-border bg-card px-3.5 font-medium hover:border-accent desk:h-9 desk:rounded-lg desk:px-3',
+            !compact && 'desk:min-w-[190px]',
+          )}
         >
           {current ? <AccountDot color={accountColor(current.id, sorted)} /> : <AccountDot />}
-          <span className="max-w-[110px] truncate desk:max-w-none">
+          <span
+            className={cn(
+              'max-w-[110px] truncate',
+              compact ? 'desk:max-w-[136px]' : 'desk:max-w-none',
+            )}
+          >
             {current ? accountName(current) : 'All accounts'}
           </span>
           {/* A real space, so the text on the button reads "Seed Main Normal", as in its name. */}{' '}
-          {current?.displayName != null && current.accountType !== null && (
+          {!compact && current?.displayName != null && current.accountType !== null && (
             <span className="hidden text-xs font-normal text-text-3 desk:inline">
               {formatAccountType(current.accountType)}
             </span>
