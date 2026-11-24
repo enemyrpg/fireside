@@ -153,7 +153,7 @@ describe('CLI and the instance lock', () => {
     expect(log).toEqual(
       expect.arrayContaining([
         expect.stringMatching(/^Backup before migrating: /),
-        expect.stringMatching(/^Recomputed sessions after a rule change in \d+ ms\.$/),
+        expect.stringMatching(/^Recomputed sessions, kc after a rule change in \d+ ms\.$/),
       ]),
     );
   });

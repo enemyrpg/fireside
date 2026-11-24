@@ -54,10 +54,10 @@ function oldRun() {
 describe('projection versions', () => {
   it('counts a missing row as version 1', () => {
     const run = emptyRun();
-    expect(outdatedProjections(run.database.sqlite).map((p) => p.name)).toEqual(['sessions']);
+    expect(outdatedProjections(run.database.sqlite).map((p) => p.name)).toEqual(['sessions', 'kc']);
     recordCurrentVersions(run.database.db);
     expect(outdatedProjections(run.database.sqlite)).toEqual([]);
-    expect(versions(run)).toMatchObject({ accounts: 1, sessions: 2 });
+    expect(versions(run)).toMatchObject({ accounts: 1, sessions: 2, kc: 2 });
   });
 
   it('recomputes an outdated projection and records the versions', () => {
@@ -66,8 +66,8 @@ describe('projection versions', () => {
     expect(upgrade.pending(run.database.sqlite)).toBe(true);
     const report = upgrade.run(run.database.db, run.database.sqlite);
     expect(report).toMatchObject({
-      projections: ['sessions'],
-      counts: { sessions: 1 },
+      projections: ['sessions', 'kc'],
+      counts: { sessions: 1, kcObservationsRemoved: 0 },
       columns: {},
     });
     expect(report.tables).toEqual(
@@ -111,7 +111,8 @@ describe('projection versions', () => {
     };
     const projections = PROJECTIONS.map((p) => (p.name === 'sessions' ? withoutRecompute : p));
     const outdated = outdatedProjections(run.database.sqlite, projections);
-    expect(outdated.map((p) => p.name)).toEqual(['sessions']);
+    // kc has a recompute, but one outdated projection without makes it a rebuild.
+    expect(outdated.map((p) => p.name)).toEqual(['sessions', 'kc']);
 
     const report = recomputeOutdated(run.database.db, outdated, {
       projections,

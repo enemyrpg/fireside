@@ -425,7 +425,10 @@ export const lootItems = sqliteTable(
   ],
 );
 
-/** KC seen in chat (`kc`) or on a named loot event with `killCount`. `boss` is normalized. */
+/**
+ * One KC observation per kill (account, boss, kill count): from a `kc` event, or a
+ * named loot event with `killCount` if no `kc` reports the kill. `boss` is normalized.
+ */
 export const kcObservations = sqliteTable(
   'kc_observations',
   {

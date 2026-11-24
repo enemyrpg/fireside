@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { kcObservationOf } from './kc.js';
+import { kcObservationOf } from './kc-observation.js';
 import { eventFactory, expectOrderIndependent, validFixtureFiles } from './testing.js';
 
 const OTHER = {
@@ -35,9 +35,17 @@ describe('xp, loot and kc projections together', () => {
     const ofType = (type: string) => events.filter((event) => event.type === type);
     expect(snapshot.xp.snapshots).toHaveLength(ofType('xp.snapshot').length);
     expect(snapshot.loot.lootEvents).toHaveLength(ofType('loot').length);
-    // Every kc event, plus each named loot event with killCount.
-    const withKc = events.filter((event) => kcObservationOf(event) !== undefined);
-    expect(withKc.length).toBeGreaterThan(ofType('kc').length);
-    expect(snapshot.kc).toHaveLength(withKc.length);
+    // One per kill: per account, normalized boss and kill count, from a kc
+    // event or a named loot event with killCount.
+    const kills = new Set(
+      events.flatMap((event) => {
+        const observation = kcObservationOf(event);
+        return observation
+          ? [`${event.accountHash}|${observation.boss}|${String(observation.killCount)}`]
+          : [];
+      }),
+    );
+    expect(kills.size).toBeGreaterThan(0);
+    expect(snapshot.kc).toHaveLength(kills.size);
   });
 });
