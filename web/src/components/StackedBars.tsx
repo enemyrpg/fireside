@@ -10,7 +10,15 @@ import {
 } from 'recharts';
 import { Tooltip as HoverTip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { formatAxisHours, formatDuration } from '@/format';
-import { CHART_BAND_CURSOR, hourTicks } from '@/lib/chart';
+import { useElementWidth } from '@/hooks/useElementWidth';
+import {
+  CHART_BAND_CURSOR,
+  DATE_LABEL_WIDTH,
+  SHORT_LABEL_WIDTH,
+  evenTicks,
+  hourTicks,
+  maxTickLabels,
+} from '@/lib/chart';
 import { cn } from '@/lib/utils';
 
 // Active/AFK play time per period: active at the bottom in `--active`, AFK on
@@ -41,9 +49,13 @@ export interface StackedBarsProps {
    * labels are their first letter (`M`, `T`). Same stacking and tooltips.
    */
   variant?: 'chart' | 'compact';
+  /** `chart` only: the labels are dates (`9 Nov`), not weekdays or days of the month. */
+  dateLabels?: boolean;
 }
 
 const AXIS_TICK = { fill: 'var(--text-3)', fontSize: 11 };
+const Y_AXIS_WIDTH = 40;
+const MARGIN = { top: 8, right: 4, bottom: 0, left: 0 };
 /** Space between the active and AFK segments. */
 const GAP = 2;
 const RADIUS = 4;
@@ -188,27 +200,40 @@ function CompactBars({ bars, label }: { bars: readonly StackedBar[]; label: stri
 }
 
 /** Stacked active/AFK bars with whole-hour ticks and a tooltip per bar. */
-export function StackedBars({ bars, label, height = 220, variant = 'chart' }: StackedBarsProps) {
-  if (variant === 'compact') return <CompactBars bars={bars} label={label} />;
+export function StackedBars({ variant = 'chart', ...props }: StackedBarsProps) {
+  if (variant === 'compact') return <CompactBars bars={props.bars} label={props.label} />;
+  return <ChartBars {...props} />;
+}
+
+/**
+ * The `chart` variant. X labels at one step counted back from the last bar
+ * (`evenTicks`), as many as fit the measured width. The axis is keyed by `key`,
+ * so two bars with the same label (`1` twice in a 30-day range over February)
+ * are still two ticks.
+ */
+function ChartBars({ bars, label, height = 220, dateLabels = false }: StackedBarsProps) {
+  const { attach, width } = useElementWidth();
   const max = Math.max(0, ...bars.map((bar) => bar.activeSeconds + bar.afkSeconds));
   const ticks = hourTicks(max);
+  const plotWidth = width === null ? null : width - Y_AXIS_WIDTH - MARGIN.left - MARGIN.right;
+  const xTicks = evenTicks(
+    bars.map((bar) => bar.key),
+    maxTickLabels(plotWidth, dateLabels ? DATE_LABEL_WIDTH : SHORT_LABEL_WIDTH),
+  );
+  const labelOf = new Map(bars.map((bar) => [bar.key, bar.label]));
   return (
-    <div role="img" aria-label={label} style={{ height }} className="tabular-nums">
+    <div ref={attach} role="img" aria-label={label} style={{ height }} className="tabular-nums">
       <ResponsiveContainer width="100%" height="100%">
-        <BarChart
-          accessibilityLayer={false}
-          data={bars}
-          margin={{ top: 8, right: 4, bottom: 0, left: 0 }}
-          barCategoryGap="30%"
-        >
+        <BarChart accessibilityLayer={false} data={bars} margin={MARGIN} barCategoryGap="30%">
           <CartesianGrid vertical={false} stroke="var(--grid)" />
           <XAxis
-            dataKey="label"
+            dataKey="key"
+            ticks={xTicks}
+            interval={0}
+            tickFormatter={(key: string) => labelOf.get(key) ?? key}
             tick={AXIS_TICK}
             tickLine={false}
             axisLine={{ stroke: 'var(--grid)' }}
-            minTickGap={8}
-            interval="preserveStartEnd"
           />
           <YAxis
             domain={[0, ticks[ticks.length - 1] ?? 0]}
@@ -217,7 +242,7 @@ export function StackedBars({ bars, label, height = 220, variant = 'chart' }: St
             tick={AXIS_TICK}
             tickLine={false}
             axisLine={false}
-            width={40}
+            width={Y_AXIS_WIDTH}
           />
           <Tooltip
             cursor={CHART_BAND_CURSOR}

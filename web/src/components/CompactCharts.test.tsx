@@ -42,6 +42,18 @@ describe('StackedBars variant="compact"', () => {
   });
 });
 
+describe('StackedBars variant="chart"', () => {
+  it('renders before it is measured (no ResizeObserver in tests)', () => {
+    render(
+      <StackedBars
+        label="Play time per day"
+        bars={[day('2026-01-31', '31', 3600, 0), day('2026-03-01', '1', 1800, 600)]}
+      />,
+    );
+    expect(screen.getByRole('img', { name: 'Play time per day' })).toBeDefined();
+  });
+});
+
 describe('ItemRow', () => {
   it('has the name, one line under it, and the value', () => {
     render(

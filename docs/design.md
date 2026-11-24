@@ -20,6 +20,7 @@ for: tokens in [`web/src/theme/themes.css`](../web/src/theme/themes.css) and
 - [Login, invite and about pages](#login-invite-and-about-pages)
 - [Themes](#themes)
 - [Chart colors](#chart-colors)
+- [Chart axes](#chart-axes)
 - [Typography](#typography)
 - [Layout and density](#layout-and-density)
 - [Placeholders and icons](#placeholders-and-icons)
@@ -355,6 +356,19 @@ and deutan, Machado 2009) and distance (CIEDE2000), and for contrast against
   the identity.
 - **One axis per chart.** No charts with two y-axes.
 
+## Chart axes
+
+- **X labels are evenly spaced.** A chart labels every `step`-th value counted
+  back from the last one, `step = ceil(n / maxLabels)`, so the last value
+  (today, or this week) always has a label and every gap is the same. The first
+  value only has one when the step lands on it. Recharts never drops labels
+  by their width (`evenTicks` in `web/src/lib/chart.ts`).
+- **As many labels as fit.** `maxLabels` is the measured plot width divided by
+  a fixed room per label: 52 px for dates (`30 Sept`, about 41 px at 11 px)
+  and 28 px for weekdays and days of the month (`Mon`, about 24 px). Before
+  the chart is measured it is 6. When every value fits, every value has a
+  label.
+
 ## Typography
 
 - **Space Grotesk** (500, 600, 700) for big numbers, page titles, dialog
@@ -480,7 +494,7 @@ The building blocks are in `web/src/components/`. The main ones:
 | `StatStrip`, `Delta`                                                         | The stat strip; a neutral ▲/▼ with duration and percent                                                           |
 | `HBarList`, `ShowAllButton`                                                  | Name, bar and value, with the six-row rule                                                                        |
 | `DataTable`                                                                  | shadcn Table: right-aligned numbers, tabular digits, row hover                                                    |
-| `StackedBars`, `XpLine`, `ValueLine`, `ValueBars`, `Sparkline`               | Charts: active/AFK, one series over time, bars, a line without axes                                               |
+| `StackedBars`, `XpLine`, `ValueLine`, `Sparkline`                            | Charts: active/AFK, one series over time, a line without axes                                                     |
 | `HourHeatmap`, `ActivityCalendar`, `WeekDayBars`                             | Heat grids and the bars per weekday                                                                               |
 | `SessionTimeline`, `SessionRow`, `ShortSessionsRow`, `HopChainBar`           | Sessions                                                                                                          |
 | `ItemIcon`, `SkillIcon`, `BossIcon`, `ItemGrid`, `ItemSlot`, `EquipmentGrid` | Icons and the game's own grids                                                                                    |
