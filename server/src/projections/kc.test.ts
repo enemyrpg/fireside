@@ -93,6 +93,7 @@ describe('kc projection', () => {
 describe('kc projection: one observation per kill', () => {
   interface Row {
     eventId: string;
+    personalBest: boolean;
     killCount: number;
     timeSeconds: number | null;
     boss: string;
@@ -177,6 +178,27 @@ describe('kc projection: one observation per kill', () => {
     }
     expect(expectOrderIndependent([untimed, timed]).kc).toEqual([
       expect.objectContaining({ eventId: timed.eventId }),
+    ]);
+  });
+
+  it('prefers the kc event with the PB flag, even without seconds', () => {
+    const f = eventFactory();
+    const plain = f.fromFixture('kc-minimal.json', '19:00', {
+      payload: { boss: 'Vorkath', killCount: 412 },
+    });
+    const flagged = f.fromFixture('kc-minimal.json', '19:00', {
+      payload: { boss: 'Vorkath', killCount: 412, personalBest: true },
+    });
+    for (const order of [
+      [plain, flagged],
+      [flagged, plain],
+    ]) {
+      expect(kcRows(runIncremental(order))).toEqual([
+        expect.objectContaining({ eventId: flagged.eventId, personalBest: true }),
+      ]);
+    }
+    expect(expectOrderIndependent([plain, flagged]).kc).toEqual([
+      expect.objectContaining({ eventId: flagged.eventId, personalBest: true }),
     ]);
   });
 

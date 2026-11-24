@@ -36,8 +36,11 @@ export function compareCandidates(a: Candidate, b: Candidate): number {
   return compareEventRows(a, b);
 }
 
-function isTimed(row: Pick<Observation, 'timeSeconds' | 'personalBestSeconds'>): boolean {
-  return row.timeSeconds !== null || row.personalBestSeconds !== null;
+/** Whether the row has a time or a PB (a PB time, or only the PB flag). */
+function isTimed(
+  row: Pick<Observation, 'timeSeconds' | 'personalBest' | 'personalBestSeconds'>,
+): boolean {
+  return row.timeSeconds !== null || row.personalBest || row.personalBestSeconds !== null;
 }
 
 /**
@@ -46,7 +49,7 @@ function isTimed(row: Pick<Observation, 'timeSeconds' | 'personalBestSeconds'>):
  */
 const WINNER_ORDER = sql.raw(
   `(e.type = 'kc') DESC,
-   (o.time_seconds IS NOT NULL OR o.personal_best_seconds IS NOT NULL) DESC,
+   (o.time_seconds IS NOT NULL OR o.personal_best = 1 OR o.personal_best_seconds IS NOT NULL) DESC,
    o.observed_at ASC, o.event_id ASC`,
 );
 
@@ -77,6 +80,7 @@ export const kcProjection: Projection = {
         eventId: kcObservations.eventId,
         occurredAt: kcObservations.observedAt,
         timeSeconds: kcObservations.timeSeconds,
+        personalBest: kcObservations.personalBest,
         personalBestSeconds: kcObservations.personalBestSeconds,
         type: events.type,
       })
