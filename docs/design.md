@@ -99,6 +99,17 @@ account switcher and the profile icon (a link to `/settings`). The chosen
 destination is `--accent-wash` with `--accent-text`. No sidebar and no search
 field.
 
+- **Compact top bar (1100 px and narrower):** the product name is only for
+  screen readers (the logo stays the link to Home, with the product name as its
+  accessible name), and the account switcher shows only the account name, at
+  most 136 px with an ellipsis, without the account type. This keeps the bar on
+  one row on a phone in landscape, notch inset included.
+- Each destination reserves the width of its bold (chosen) label, so choosing a
+  page never moves the bar.
+- The top bar never wraps: if it is too narrow, the destinations shrink and
+  scroll sideways rather than pushing the account switcher onto a second row.
+  Nothing in the bar sits under the notch (`SHELL_EDGE`).
+
 **Phone (860 px and narrower):** a fixed tab bar at the bottom with the same
 five destinations (icon over name, at least 52 px high, `--safe-bottom`
 below). The page header scrolls with the page and has up to three rows: the

@@ -93,14 +93,23 @@ async function topBar() {
   return screen.findByRole('banner');
 }
 
+/**
+ * The text a screen reader gets: without `aria-hidden` parts, such as the bold
+ * copy that reserves a top bar label's width.
+ */
+function spokenText(element: Element | null): string {
+  if (element === null) return '';
+  const copy = element.cloneNode(true) as Element;
+  for (const hidden of copy.querySelectorAll('[aria-hidden="true"]')) hidden.remove();
+  return copy.textContent;
+}
+
 /** Link texts of a navigation, and the one marked as the current page. */
 function linksOf(nav: HTMLElement) {
   const links = within(nav).getAllByRole('link');
   return {
-    names: links.map((link) => link.textContent),
-    current: links
-      .filter((link) => link.getAttribute('aria-current') === 'page')
-      .map((link) => link.textContent),
+    names: links.map(spokenText),
+    current: links.filter((link) => link.getAttribute('aria-current') === 'page').map(spokenText),
   };
 }
 
@@ -161,7 +170,7 @@ describe('navigation', () => {
     for (let i = 0; i < 6; i++) {
       await user.tab();
       const focused = document.activeElement;
-      order.push(focused?.getAttribute('aria-label') ?? focused?.textContent ?? '');
+      order.push(focused?.getAttribute('aria-label') ?? spokenText(focused));
     }
     expect(order).toEqual([
       BRANDING.displayName,
