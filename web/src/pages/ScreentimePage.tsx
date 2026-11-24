@@ -247,6 +247,7 @@ function PlaytimeCard({
             ) : (
               <StackedBars
                 bars={bars}
+                dateLabels={data.bucket === 'week'}
                 label={`Active and AFK play time per ${per}, last ${rangeDays(range)}`}
               />
             )}
