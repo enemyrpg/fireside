@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { closeSync, openSync, readdirSync, readSync, renameSync, rmSync, statSync } from 'node:fs';
+import { closeSync, openSync, readSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { BRANDING } from '@fireside/shared';
 import BetterSqlite3 from 'better-sqlite3';
@@ -9,12 +9,14 @@ import { createPrivateFile, ensurePrivateDir, makePrivateFile } from '../fs-mode
 import {
   backupFileName,
   fsyncPath,
-  isNotFound,
+  isBackupNameTaken,
   listBackups,
   markWrittenThisRun,
+  moveIntoFreeName,
   TEMP_PREFIX,
   TEMP_SUFFIX,
 } from './files.js';
+import { gzipFile, verifyGzipFile } from './gzip.js';
 import { pruneBackups, type ClockAheadHandler } from './retention.js';
 
 // Backups use `VACUUM INTO` on a separate read-only connection:
@@ -25,8 +27,18 @@ import { pruneBackups, type ClockAheadHandler } from './retention.js';
 //   connection writes, so under steady writes it may never finish;
 // - the result is one compact file in rollback-journal mode, with no `-wal`
 //   or `-shm` beside it, ready to copy or open.
-// It runs synchronously: the server waits while it runs (well under a second
-// for typical sizes). The duration is logged.
+// `VACUUM INTO` runs synchronously: the server waits while it runs (well under
+// a second for typical sizes). The copy is then gzipped as a stream, which
+// doesn't block the server. The duration is logged.
+//
+// Steps, all in BACKUP_DIR: `VACUUM INTO` a temp file (`….db.tmp`), integrity
+// check, gzip it into a second temp file (`….gz.tmp`), read that back through
+// gunzip (CRC-32 and length), move it to the final name once it is on disk
+// and checked (never over an existing file), then remove the uncompressed
+// temp. Both temp files exist for a moment, so a backup needs
+// free space for the database plus its compressed copy. A backup interrupted
+// at any point leaves only temp files, which never count as backups and which
+// retention removes.
 
 /** Wait this long for a lock held by another process (same as the app). */
 const BUSY_TIMEOUT_MS = 5000;
@@ -133,13 +145,18 @@ export interface BackupOptions {
   now?: Clock;
   /** Called once per process when the clock is more than a day ahead of the backups. */
   onClockAhead?: ClockAheadHandler;
+  /** Stops the backup (server shutdown): it then fails, leaving no backup and no temp files. */
+  signal?: AbortSignal;
 }
 
 export interface BackupResult {
   fileName: string;
   path: string;
   createdAt: Date;
+  /** Size of the compressed backup. */
   sizeBytes: number;
+  /** Size of the database copy before compression. */
+  uncompressedBytes: number;
   durationMs: number;
   /** Backups kept after retention (this one included). */
   count: number;
@@ -150,24 +167,29 @@ export interface BackupResult {
 
 /**
  * Takes a backup of `dbFile` into `dir`, safe while the server writes:
- * `VACUUM INTO` a temp file, integrity check, rename to the final name, then
- * retention. On failure the temp file is removed and nothing else changes.
+ * `VACUUM INTO` a temp file, integrity check, gzip into a second temp file,
+ * rename that to the final name, then retention. On failure both temp files
+ * are removed and nothing else changes.
  */
-export function createBackup({
+export async function createBackup({
   dbFile,
   dir,
   keep,
   timeZone,
   now = systemClock,
   onClockAhead,
-}: BackupOptions): BackupResult {
+  signal,
+}: BackupOptions): Promise<BackupResult> {
   const started = now();
   const startedMs = performance.now();
   ensurePrivateDir(dir);
-  const temp = join(dir, `${TEMP_PREFIX}${randomBytes(6).toString('hex')}${TEMP_SUFFIX}`);
+  const tempBase = join(dir, `${TEMP_PREFIX}${randomBytes(6).toString('hex')}`);
+  const plainTemp = `${tempBase}.db${TEMP_SUFFIX}`;
+  const gzipTemp = `${tempBase}.gz${TEMP_SUFFIX}`;
 
   let final: string;
   let fileName: string;
+  let uncompressedBytes: number;
   try {
     let source: BetterSqlite3.Database;
     try {
@@ -182,25 +204,38 @@ export function createBackup({
       });
     }
     try {
-      vacuumInto(source, temp);
+      vacuumInto(source, plainTemp);
     } finally {
       source.close();
     }
 
-    openCheckedDatabase(temp).close();
+    openCheckedDatabase(plainTemp).close();
+    uncompressedBytes = statSync(plainTemp).size;
 
-    // A second backup in the same second (e.g. manual right after scheduled) gets a suffix.
+    await gzipFile(plainTemp, gzipTemp, signal);
+    // A write that went wrong without an error must not count as a backup.
+    await verifyGzipFile(gzipTemp, uncompressedBytes, signal);
+    signal?.throwIfAborted();
+
+    // A second backup in the same second (e.g. manual right after scheduled)
+    // gets a suffix. The move fails instead of overwriting when another
+    // process took the name between the check and the move.
     let copy = 1;
-    do {
-      fileName = backupFileName(started.getTime(), copy++);
-      final = join(dir, fileName);
-    } while (listBackups(dir).some((backup) => backup.fileName === fileName));
-    renameSync(temp, final);
+    for (;;) {
+      if (!isBackupNameTaken(dir, started.getTime(), copy)) {
+        fileName = backupFileName(started.getTime(), copy);
+        final = join(dir, fileName);
+        if (moveIntoFreeName(gzipTemp, final)) break;
+      }
+      copy++;
+    }
     markWrittenThisRun(fileName);
     fsyncPath(dir);
   } catch (error) {
-    rmSync(temp, { force: true });
+    rmSync(gzipTemp, { force: true });
     throw error;
+  } finally {
+    rmSync(plainTemp, { force: true });
   }
 
   const deleted = pruneBackups(dir, keep, timeZone, {
@@ -214,41 +249,10 @@ export function createBackup({
     path: final,
     createdAt: started,
     sizeBytes,
+    uncompressedBytes,
     durationMs: Math.round(performance.now() - startedMs),
     count: backups.length,
     totalSizeBytes: backups.reduce((sum, backup) => sum + backup.sizeBytes, 0),
     deleted,
   };
-}
-
-/** A temp file older than this is left over from an interrupted backup. */
-const STALE_TEMP_MS = 60 * 60_000;
-
-/**
- * Removes temp files left by a backup that was interrupted (crash, power
- * loss). Files younger than an hour are left alone: a `pnpm cli backup` may
- * be writing one right now. Returns the removed names.
- */
-export function removeLeftoverTempFiles(dir: string, now: Clock = systemClock): string[] {
-  let names: string[];
-  try {
-    names = readdirSync(dir);
-  } catch (error) {
-    if (isNotFound(error)) return [];
-    throw error;
-  }
-  const removed: string[] = [];
-  for (const name of names) {
-    if (!name.startsWith(TEMP_PREFIX) || !name.endsWith(TEMP_SUFFIX)) continue;
-    const path = join(dir, name);
-    try {
-      if (now().getTime() - statSync(path).mtimeMs < STALE_TEMP_MS) continue;
-    } catch (error) {
-      if (isNotFound(error)) continue;
-      throw error;
-    }
-    rmSync(path, { force: true });
-    removed.push(name);
-  }
-  return removed;
 }

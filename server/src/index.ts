@@ -59,7 +59,14 @@ try {
   console.error(`Could not open the database at ${databasePath(config.dataDir)}:`, error);
   process.exit(1);
 }
-const { lock: instanceLock, database: db, dbFile, preMigrateBackup, permissions } = opened;
+const {
+  lock: instanceLock,
+  database: db,
+  dbFile,
+  preMigrateBackup,
+  permissions,
+  removedRestoreFiles,
+} = opened;
 
 // Several users and no password: local mode would let anyone on this machine
 // act as user 1. Fail closed.
@@ -80,6 +87,10 @@ app.addHook('onClose', () => {
   instanceLock.release();
 });
 closeOnSignals(app);
+
+if (removedRestoreFiles.length > 0) {
+  app.log.warn({ removed: removedRestoreFiles }, 'Removed files left by an interrupted restore');
+}
 
 if (preMigrateBackup !== undefined) {
   app.log.info({ file: preMigrateBackup }, 'Backup before migrating');

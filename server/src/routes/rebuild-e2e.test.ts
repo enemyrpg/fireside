@@ -257,9 +257,9 @@ async function rebuildViaApi(h: Harness) {
   return rebuildResponseSchema.parse(response.json());
 }
 
-function rebuildViaCli(h: Harness) {
+async function rebuildViaCli(h: Harness) {
   const out: string[] = [];
-  const code = runCli(['rebuild'], {
+  const code = await runCli(['rebuild'], {
     openDb: () => h.database.db,
     out: (line) => out.push(line),
     err: (line) => out.push(line),
@@ -297,7 +297,7 @@ describe('rebuild after ingest (acceptance)', () => {
     expect(snapshot(h)).toEqual(continuous);
     expect(eventState(h).every((row) => row.processed !== null && row.error === null)).toBe(true);
 
-    rebuildViaCli(h);
+    await rebuildViaCli(h);
     expect(snapshot(h)).toEqual(continuous);
   });
 

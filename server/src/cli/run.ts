@@ -35,9 +35,9 @@ export interface CliContext {
   /** `backup` and `restore`. Kept behind functions so tests can use temp folders. */
   backups: {
     /** Takes a backup now. Throws `CliError` if there is no database. */
-    create: () => BackupResult;
+    create: () => Promise<BackupResult>;
     /** Restores `file` (as typed by the user). */
-    restore: (file: string) => RestoreResult;
+    restore: (file: string) => Promise<RestoreResult>;
   };
   /** Overrides `PROJECTIONS` for `rebuild` and `reprocess`. Used by tests. */
   projections?: readonly Projection[];
@@ -104,7 +104,7 @@ const isHelp = (arg: string | undefined) => arg !== undefined && HELP_FLAGS.has(
  * `restore`. After an unknown command it is ignored,
  * so typos still report "Unknown command".
  */
-export function runCli(argv: string[], ctx: CliContext): number {
+export async function runCli(argv: string[], ctx: CliContext): Promise<number> {
   const [group, command, ...rest] = argv;
   const wantsHelp =
     isHelp(group) ||
@@ -136,8 +136,8 @@ export function runCli(argv: string[], ctx: CliContext): number {
   try {
     if (group === 'rebuild') return rebuild(ctx);
     if (group === 'reprocess') return reprocess(ctx);
-    if (group === 'backup') return backup(ctx);
-    if (group === 'restore') return restore(command ?? '', ctx);
+    if (group === 'backup') return await backup(ctx);
+    if (group === 'restore') return await restore(command ?? '', ctx);
     return runKeysCommand(command, rest, ctx);
   } catch (error) {
     if (
@@ -408,11 +408,11 @@ function reportFailures(db: Db, result: AdminRunResult, ctx: CliContext): number
   return EXIT_FAILURE;
 }
 
-function backup(ctx: CliContext): number {
-  const result = ctx.backups.create();
+async function backup(ctx: CliContext): Promise<number> {
+  const result = await ctx.backups.create();
   ctx.out(
     `Backup saved: ${result.path} (${formatBytes(result.sizeBytes)}, ` +
-      `${String(result.durationMs)} ms).`,
+      `${formatBytes(result.uncompressedBytes)} uncompressed, ${String(result.durationMs)} ms).`,
   );
   ctx.out(
     `${String(result.count)} ${plural(result.count, 'backup')} kept ` +
@@ -425,10 +425,10 @@ function backup(ctx: CliContext): number {
   return EXIT_OK;
 }
 
-function restore(file: string, ctx: CliContext): number {
+async function restore(file: string, ctx: CliContext): Promise<number> {
   let result: RestoreResult;
   try {
-    result = ctx.backups.restore(file);
+    result = await ctx.backups.restore(file);
   } catch (error) {
     if (!(error instanceof InstanceLockedError)) throw error;
     ctx.err(error.message);

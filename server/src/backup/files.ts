@@ -1,19 +1,33 @@
-import { closeSync, fsyncSync, openSync, readdirSync, statSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  linkSync,
+  openSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { BRANDING } from '@fireside/shared';
 
 // Backup file names and listing. A backup is named after the time it was
 // taken, in UTC, so names sort by time and never repeat at DST changes:
-//   fireside-20261114-030000Z.db      (a second one in the same second: …Z-2.db)
-// Only names that match count as backups. Copies kept by `restore`
+//   fireside-20261114-030000Z.db.gz   (a second one in the same second: …Z-2.db.gz)
+// Backups are gzipped (backup.ts). Older ones, from before backups were
+// compressed, end in `.db`: they count as backups the same way, and `restore`
+// reads both. Only names that match count as backups. Copies kept by `restore`
 // (`fireside-pre-restore-….db`, and `….db-wal` when the database was copied
 // raw) and taken before migrations (`fireside-pre-migrate-….db`) are not
 // backups: the status and `restore` ignore them, and the daily, weekly and
 // monthly levels never keep them. Retention deletes them after the max age
-// (retention.ts). No other file in the folder is ever deleted.
+// (retention.ts). A backup unpacked in place (`gunzip -k`) has a backup's
+// name, so retention deletes it too. No other file in the folder is ever
+// deleted.
 
 const NAME = BRANDING.shortName;
-const BACKUP_NAME = new RegExp(`^${NAME}-(\\d{8})-(\\d{6})Z(?:-(\\d+))?\\.db$`);
+const BACKUP_NAME = new RegExp(`^${NAME}-(\\d{8})-(\\d{6})Z(?:-(\\d+))?\\.db(?:\\.gz)?$`);
 const PRE_MIGRATE_NAME = new RegExp(`^${NAME}-pre-migrate-(\\d{8})-(\\d{6})Z(?:-(\\d+))?\\.db$`);
 const PRE_RESTORE_NAME = new RegExp(`^${NAME}-pre-restore-(\\d{8})-(\\d{6})Z\\.db(?:-wal)?$`);
 
@@ -36,7 +50,12 @@ export function filesWrittenThisRun(): ReadonlyMap<string, number> {
   return writtenThisRun;
 }
 
-/** Prefix of temporary files while a backup is written. Removed if left behind. */
+/**
+ * Prefix of temporary files while a backup is written (`….db.tmp` from
+ * `VACUUM INTO`, `….gz.tmp` while it is compressed). They never match a
+ * backup name, so a backup interrupted halfway never counts. Retention
+ * removes them when they are left behind (`removeLeftoverTempFiles`).
+ */
 export const TEMP_PREFIX = `.${NAME}-backup-`;
 export const TEMP_SUFFIX = '.tmp';
 
@@ -55,7 +74,48 @@ function stamp(ms: number): string {
 
 /** Name of a backup taken at `ms`. `copy` > 1 for a second backup in the same second. */
 export function backupFileName(ms: number, copy = 1): string {
-  return `${NAME}-${stamp(ms)}${copy > 1 ? `-${String(copy)}` : ''}.db`;
+  return `${NAME}-${stamp(ms)}${copy > 1 ? `-${String(copy)}` : ''}.db.gz`;
+}
+
+/** Error codes of a file system that has no hard links (some network and FAT file systems). */
+const NO_HARD_LINKS = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS']);
+
+/**
+ * Moves the finished temp file `temp` to `target` only if `target` doesn't
+ * exist yet: two processes (the server and `pnpm cli backup`) that pick the
+ * same name never overwrite each other's backup, as `rename` would. Returns
+ * false when the name is taken; `temp` is then still there. A hard link is
+ * atomic and fails if the name exists; on a file system without hard links
+ * it falls back to checking first, then renaming.
+ */
+export function moveIntoFreeName(
+  temp: string,
+  target: string,
+  link: (existing: string, newPath: string) => void = linkSync,
+): boolean {
+  try {
+    link(temp, target);
+  } catch (error) {
+    const code = error instanceof Error && 'code' in error ? error.code : undefined;
+    if (code === 'EEXIST') return false;
+    if (typeof code !== 'string' || !NO_HARD_LINKS.has(code)) throw error;
+    if (existsSync(target)) return false;
+    renameSync(temp, target);
+    return true;
+  }
+  rmSync(temp, { force: true });
+  return true;
+}
+
+/**
+ * Whether a backup with this time and copy number is already in `dir`,
+ * compressed or not: a new backup must not share its time and copy number
+ * with an older uncompressed one.
+ */
+export function isBackupNameTaken(dir: string, ms: number, copy: number): boolean {
+  const name = backupFileName(ms, copy);
+  const plain = name.slice(0, -'.gz'.length);
+  return existsSync(join(dir, name)) || existsSync(join(dir, plain));
 }
 
 /** UTC ms from the date and time groups of a name, or `undefined` if they aren't a real time. */
@@ -150,15 +210,31 @@ function copyNumber(fileName: string): number {
   return Number(BACKUP_NAME.exec(fileName)?.[3] ?? 1);
 }
 
-/** Sort order for backups: newest first; in the same second, the higher copy number first. */
+const isCompressed = (fileName: string) => (fileName.endsWith('.gz') ? 1 : 0);
+
+/**
+ * Sort order for backups: newest first; in the same second, the higher copy
+ * number first; with the same name apart from `.gz` (a backup unpacked in
+ * place with `gunzip -k`), the compressed one first, so retention keeps the
+ * backup the server wrote.
+ */
 export function newestFirst(
   a: Pick<BackupEntry, 'fileName' | 'createdAtMs'>,
   b: Pick<BackupEntry, 'fileName' | 'createdAtMs'>,
 ): number {
-  return b.createdAtMs - a.createdAtMs || copyNumber(b.fileName) - copyNumber(a.fileName);
+  return (
+    b.createdAtMs - a.createdAtMs ||
+    copyNumber(b.fileName) - copyNumber(a.fileName) ||
+    isCompressed(b.fileName) - isCompressed(a.fileName)
+  );
 }
 
-/** Backups in `dir`, newest first. An empty list if the folder doesn't exist. */
+/**
+ * Backups in `dir`, newest first. An empty list if the folder doesn't exist.
+ * A `….db` next to the `….db.gz` of the same name is that backup unpacked by
+ * hand (`gunzip -k`), not another backup: it is left out, so the status
+ * doesn't count it. Retention still deletes it like a backup (retention.ts).
+ */
 export function listBackups(dir: string): BackupEntry[] {
   let names: string[];
   try {
@@ -167,10 +243,12 @@ export function listBackups(dir: string): BackupEntry[] {
     if (isNotFound(error)) return [];
     throw error;
   }
+  const present = new Set(names);
   const entries: BackupEntry[] = [];
   for (const fileName of names) {
     const createdAtMs = parseBackupFileName(fileName);
     if (createdAtMs === undefined) continue;
+    if (fileName.endsWith('.db') && present.has(`${fileName}.gz`)) continue;
     try {
       const stats = statSync(join(dir, fileName));
       if (stats.isFile()) entries.push({ fileName, createdAtMs, sizeBytes: stats.size });
@@ -194,4 +272,37 @@ export function fsyncPath(path: string): void {
   } finally {
     closeSync(fd);
   }
+}
+
+/** A temp file older than this is left over from an interrupted backup. */
+const STALE_TEMP_MS = 60 * 60_000;
+
+/**
+ * Removes temp files left by a backup that was interrupted (crash, power
+ * loss, a full disk). Files younger than an hour are left alone: a
+ * `pnpm cli backup` may be writing one right now. Returns the removed names.
+ */
+export function removeLeftoverTempFiles(dir: string, nowMs: number = Date.now()): string[] {
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch (error) {
+    if (isNotFound(error)) return [];
+    throw error;
+  }
+  const removed: string[] = [];
+  for (const name of names) {
+    if (!name.startsWith(TEMP_PREFIX) || !name.endsWith(TEMP_SUFFIX)) continue;
+    const path = join(dir, name);
+    try {
+      const stats = statSync(path);
+      if (!stats.isFile() || nowMs - stats.mtimeMs < STALE_TEMP_MS) continue;
+    } catch (error) {
+      if (isNotFound(error)) continue;
+      throw error;
+    }
+    rmSync(path, { force: true });
+    removed.push(name);
+  }
+  return removed;
 }

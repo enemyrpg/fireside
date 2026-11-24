@@ -1,6 +1,6 @@
 import { addDays, DAY_MS, fromLocal, toLocal, type BackupStatusResponse } from '@fireside/shared';
 import { systemClock, type Clock } from '../auth/api-keys.js';
-import { createBackup, errorMessage, removeLeftoverTempFiles } from '../backup/backup.js';
+import { createBackup, errorMessage } from '../backup/backup.js';
 import { listBackups, type BackupEntry } from '../backup/files.js';
 import { pruneBackups } from '../backup/retention.js';
 import type { BackupConfig } from '../config.js';
@@ -46,8 +46,23 @@ export interface BackupJobState {
   lastError: { at: Date; message: string } | null;
 }
 
+/**
+ * How long shutdown waits for a backup that is running before it stops it.
+ * Well inside Docker's `stop_grace_period` (30 s in docker-compose.yml).
+ */
+export const BACKUP_SHUTDOWN_WAIT_MS = 10_000;
+
 export interface BackupJob extends RunningJob {
   state(): BackupJobState;
+  /** Resolves when the backup that is running (if any) has finished. */
+  idle(): Promise<void>;
+  /**
+   * Stops the job, then waits for a backup that is running, at most
+   * `waitMs`. After that it is stopped: it leaves no backup and removes its
+   * temp files. Resolves when nothing of the job touches the backup folder
+   * any more, so the server may release the instance lock.
+   */
+  shutdown(waitMs?: number): Promise<void>;
 }
 
 /**
@@ -82,15 +97,22 @@ export function startBackupJob({
     );
   };
 
-  const runBackup = (reason: 'startup' | 'scheduled') => {
+  // The backup in flight, if any. Compressing takes a while on a large
+  // database: a tick meanwhile doesn't start a second one.
+  let running: Promise<void> | undefined;
+  // Stops the backup in flight at shutdown.
+  const abort = new AbortController();
+
+  const backupOnce = async (reason: 'startup' | 'scheduled') => {
     try {
-      const result = createBackup({
+      const result = await createBackup({
         dbFile,
         dir: config.dir,
         keep: config.keep,
         timeZone,
         now,
         onClockAhead,
+        signal: abort.signal,
       });
       lastError = null;
       log.info(
@@ -98,6 +120,7 @@ export function startBackupJob({
           reason,
           file: result.fileName,
           sizeBytes: result.sizeBytes,
+          uncompressedBytes: result.uncompressedBytes,
           durationMs: result.durationMs,
           kept: result.count,
           deleted: result.deleted.length,
@@ -105,13 +128,25 @@ export function startBackupJob({
         'Backup done',
       );
     } catch (error) {
+      if (abort.signal.aborted) {
+        log.warn({ reason }, 'Backup stopped: the server is shutting down');
+        return;
+      }
       lastError = { at: now(), message: errorMessage(error) };
       log.error({ err: error, reason }, 'Backup failed');
     }
   };
 
+  const runBackup = (reason: 'startup' | 'scheduled') => {
+    if (running || stopped) return;
+    running = backupOnce(reason).finally(() => {
+      running = undefined;
+    });
+  };
+
   const tick = () => {
-    if (stopped) return;
+    // A backup still running when the time comes: try again next minute.
+    if (stopped || running) return;
     const nowMs = now().getTime();
     if (nowMs < nextRunAt) return;
     nextRunAt = nextBackupTime(nowMs, config.time, timeZone);
@@ -124,6 +159,9 @@ export function startBackupJob({
     const deleted = pruneBackups(config.dir, config.keep, timeZone, {
       nowMs: now().getTime(),
       onClockAhead,
+      onLeftoverTempFiles: (removed) => {
+        log.warn({ removed }, 'Removed unfinished backup files');
+      },
     });
     if (deleted.length > 0) log.info({ deleted: deleted.length }, 'Removed old backups');
   } catch (error) {
@@ -132,8 +170,6 @@ export function startBackupJob({
 
   if (config.enabled) {
     try {
-      const removed = removeLeftoverTempFiles(config.dir, now);
-      if (removed.length > 0) log.warn({ removed }, 'Removed unfinished backup files');
       const newest = listBackups(config.dir)[0];
       if (!newest || now().getTime() - newest.createdAtMs > STARTUP_BACKUP_AGE_MS) {
         runBackup('startup');
@@ -157,6 +193,28 @@ export function startBackupJob({
       nextRunAt: config.enabled ? new Date(nextRunAt) : null,
       lastError,
     }),
+    idle: async () => {
+      await running;
+    },
+    async shutdown(waitMs = BACKUP_SHUTDOWN_WAIT_MS) {
+      stopped = true;
+      if (timer) clearInterval(timer);
+      const inFlight = running;
+      if (!inFlight) return;
+      let waitTimer: NodeJS.Timeout | undefined;
+      const waited = new Promise<'timeout'>((resolve) => {
+        waitTimer = setTimeout(() => {
+          resolve('timeout');
+        }, waitMs);
+      });
+      const outcome = await Promise.race([inFlight.then(() => 'done' as const), waited]);
+      clearTimeout(waitTimer);
+      if (outcome === 'timeout') {
+        abort.abort();
+        // createBackup removes its temp files before it settles.
+        await inFlight;
+      }
+    },
   };
 }
 

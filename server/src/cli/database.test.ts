@@ -101,6 +101,17 @@ describe('CLI and the instance lock', () => {
       expect(tableExists(file, 'future_feature')).toBe(false);
     });
 
+    it('removes what an interrupted restore left in DATA_DIR, and says so', () => {
+      const { dataDir, log, cli } = setup();
+      const leftover = join(dataDir, `.${BRANDING.shortName}.db.restore-gunzip-tmp`);
+      writeFileSync(leftover, 'half a database');
+      cli().open({ create: false }).close();
+      expect(existsSync(leftover)).toBe(false);
+      expect(log).toContain(
+        `Removed files left by an interrupted restore: .${BRANDING.shortName}.db.restore-gunzip-tmp`,
+      );
+    });
+
     it('creates the database only when allowed', () => {
       const { file, cli } = setup({ withDatabase: false });
       const first = cli();
@@ -120,6 +131,15 @@ describe('CLI and the instance lock', () => {
       expect(claim.claim()).toBe(true);
       claim.open({ create: false }).close();
       expect(log).toEqual([`Database: ${file} (in use by a running server)`]);
+    });
+
+    it('leaves restore temp files alone: without the lock a restore may be running', () => {
+      const { dataDir, cli } = setup();
+      const temp = join(dataDir, `.${BRANDING.shortName}.db.restore-gunzip-tmp`);
+      writeFileSync(temp, 'x');
+      serverHoldsLock(dataDir);
+      cli().open({ create: false }).close();
+      expect(existsSync(temp)).toBe(true);
     });
 
     it('refuses to migrate the database under the server', () => {

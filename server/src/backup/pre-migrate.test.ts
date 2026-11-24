@@ -145,7 +145,7 @@ describe('retention and pre-migrate copies', () => {
     expect(deleted).toHaveLength(9);
     expect(deleted).toContain(old);
     expect(readdirSync(dir).sort()).toEqual(
-      [recent, `${N}-20261114-030000Z.db`, `${N}-20261113-030000Z.db`].sort(),
+      [recent, `${N}-20261114-030000Z.db.gz`, `${N}-20261113-030000Z.db.gz`].sort(),
     );
   });
 });

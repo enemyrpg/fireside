@@ -57,11 +57,11 @@ describe('pnpm cli', () => {
     database.close();
   });
 
-  function run(...argv: string[]) {
+  async function run(...argv: string[]) {
     out = [];
     err = [];
     opened = [];
-    return runCli(argv, {
+    return await runCli(argv, {
       openDb: (options) => {
         opened.push(options);
         if (failOpen !== undefined) throw new CliError(failOpen);
@@ -84,15 +84,15 @@ describe('pnpm cli', () => {
     return events;
   }
 
-  function createKey(name: string): string {
-    expect(run('keys', 'create', name)).toBe(EXIT_OK);
+  async function createKey(name: string): Promise<string> {
+    expect(await run('keys', 'create', name)).toBe(EXIT_OK);
     const keys = out.join('\n').match(KEY_IN_TEXT) ?? [];
     expect(keys).toHaveLength(1);
     return keys[0] ?? '';
   }
 
-  it('keys create prints the full key exactly once', () => {
-    const key = createKey('Gaming PC');
+  it('keys create prints the full key exactly once', async () => {
+    const key = await createKey('Gaming PC');
     expect(out.join('\n')).toContain('cannot be shown again');
     expect(err).toEqual([]);
     expect(findApiKey(database.db, key)).toMatchObject({
@@ -101,17 +101,17 @@ describe('pnpm cli', () => {
     });
   });
 
-  it('keys create joins unquoted words and trims the name', () => {
-    expect(run('keys', 'create', ' Gaming', 'PC ')).toBe(EXIT_OK);
+  it('keys create joins unquoted words and trims the name', async () => {
+    expect(await run('keys', 'create', ' Gaming', 'PC ')).toBe(EXIT_OK);
     expect(out[0]).toContain('"Gaming PC"');
   });
 
   it.each([[[]], [['   ']], [['x'.repeat(101)]], [['PC\n2  evil']], [['PC\u001b[2K']]])(
     'keys create rejects the name %j',
-    (args) => {
-      expect(run('keys', 'create', ...args)).toBe(EXIT_USAGE);
+    async (args) => {
+      expect(await run('keys', 'create', ...args)).toBe(EXIT_USAGE);
       expect(out).toEqual([]);
-      expect(run('keys', 'list')).toBe(EXIT_OK);
+      expect(await run('keys', 'list')).toBe(EXIT_OK);
       expect(out.join('\n')).toContain('No API keys yet');
     },
   );
@@ -120,15 +120,15 @@ describe('pnpm cli', () => {
     [['Laptop', '-h'], 'Laptop -h'],
     [['-laptop'], '-laptop'],
     [['--help', 'PC'], '--help PC'],
-  ])('keys create treats %j as a name, not options', (args, name) => {
-    expect(run('keys', 'create', ...args)).toBe(EXIT_OK);
+  ])('keys create treats %j as a name, not options', async (args, name) => {
+    expect(await run('keys', 'create', ...args)).toBe(EXIT_OK);
     expect(out[0]).toContain(`"${name}"`);
   });
 
-  it('keys list shows metadata but never the key', () => {
-    const key = createKey('Gaming PC');
-    createKey('Laptop');
-    expect(run('keys', 'list')).toBe(EXIT_OK);
+  it('keys list shows metadata but never the key', async () => {
+    const key = await createKey('Gaming PC');
+    await createKey('Laptop');
+    expect(await run('keys', 'list')).toBe(EXIT_OK);
     const text = out.join('\n');
     expect(text).toContain('Gaming PC');
     expect(text).toContain('Laptop');
@@ -154,8 +154,8 @@ describe('pnpm cli', () => {
       [['Gaming', 'PC', '--user', 'Ola']],
       [['--user=ola', 'Gaming', 'PC']],
       [['Gaming', 'PC', '--user=ola']],
-    ])('keys create %j makes a key for that user, made by the server', (args) => {
-      expect(run('keys', 'create', ...args)).toBe(EXIT_OK);
+    ])('keys create %j makes a key for that user, made by the server', async (args) => {
+      expect(await run('keys', 'create', ...args)).toBe(EXIT_OK);
       expect(out[0]).toContain('"Gaming PC"');
       expect(out[0]).toContain('for user "ola"');
       expect(ownerOf(keyIn(out.join('\n')))).toMatchObject({
@@ -171,53 +171,53 @@ describe('pnpm cli', () => {
       ).toEqual([['key.create', null]]);
     });
 
-    it('keys create needs --user when there are several users', () => {
-      expect(run('keys', 'create', 'PC')).toBe(EXIT_FAILURE);
+    it('keys create needs --user when there are several users', async () => {
+      expect(await run('keys', 'create', 'PC')).toBe(EXIT_FAILURE);
       expect(err.join('\n')).toContain('--user <username>');
       expect(listApiKeys(database.db)).toEqual([]);
     });
 
-    it('keys create refuses an unknown or deactivated user, and a missing name after --user', () => {
-      expect(run('keys', 'create', 'PC', '--user', 'kari')).toBe(EXIT_FAILURE);
+    it('keys create refuses an unknown or deactivated user, and a missing name after --user', async () => {
+      expect(await run('keys', 'create', 'PC', '--user', 'kari')).toBe(EXIT_FAILURE);
       expect(err.join('\n')).toContain('No user named "kari"');
       database.db
         .update(users)
         .set({ disabledAt: now.toISOString() })
         .where(eq(users.id, ola))
         .run();
-      expect(run('keys', 'create', 'PC', '--user', 'ola')).toBe(EXIT_FAILURE);
+      expect(await run('keys', 'create', 'PC', '--user', 'ola')).toBe(EXIT_FAILURE);
       expect(err.join('\n')).toContain('deactivated');
-      expect(run('keys', 'create', '--user=')).toBe(EXIT_USAGE);
+      expect(await run('keys', 'create', '--user=')).toBe(EXIT_USAGE);
       expect(listApiKeys(database.db)).toEqual([]);
     });
 
-    it('keys create stops at the limit, which counts every active key of the user', () => {
+    it('keys create stops at the limit, which counts every active key of the user', async () => {
       for (let i = 0; i < MAX_ACTIVE_KEYS_PER_USER; i += 1) {
         createApiKey(database.db, ownKey(ola), `PC ${String(i)}`);
       }
-      expect(run('keys', 'create', 'One more', '--user', 'ola')).toBe(EXIT_FAILURE);
+      expect(await run('keys', 'create', 'One more', '--user', 'ola')).toBe(EXIT_FAILURE);
       expect(err.join('\n')).toContain('maximum of active API keys');
       expect(listApiKeys(database.db, ola)).toHaveLength(MAX_ACTIVE_KEYS_PER_USER);
     });
 
-    it('keys list shows owner, creator and who revoked', () => {
+    it('keys list shows owner, creator and who revoked', async () => {
       createApiKey(database.db, ownKey(FIRST_USER_ID), 'Admin PC');
       const theirs = createApiKey(
         database.db,
         { userId: ola, createdByUserId: FIRST_USER_ID },
         'Ola PC',
       );
-      expect(run('keys', 'revoke', String(theirs.id))).toBe(EXIT_OK);
-      expect(run('keys', 'list')).toBe(EXIT_OK);
+      expect(await run('keys', 'revoke', String(theirs.id))).toBe(EXIT_OK);
+      expect(await run('keys', 'list')).toBe(EXIT_OK);
       const [header, mine, olas] = out;
       expect(header).toMatch(/^ID\s+OWNER\s+NAME\s+PREFIX\s+CREATED\s+BY\s+LAST USED\s+STATUS$/);
       expect(mine).toMatch(/^1\s+admin\s+Admin PC\s.*\sadmin\s+never\s+active$/);
       expect(olas).toMatch(/^2\s+ola\s+Ola PC\s.*\sadmin\s+never\s+revoked \S+ by -$/);
     });
 
-    it('keys revoke is made by the server: the owner sees “admin”', () => {
+    it('keys revoke is made by the server: the owner sees “admin”', async () => {
       const { id } = createApiKey(database.db, ownKey(ola), 'Ola PC');
-      expect(run('keys', 'revoke', String(id))).toBe(EXIT_OK);
+      expect(await run('keys', 'revoke', String(id))).toBe(EXIT_OK);
       const [row] = listApiKeys(database.db, ola);
       expect(row && keyRevokedBy(row)).toBe('admin');
       expect(
@@ -233,28 +233,28 @@ describe('pnpm cli', () => {
     });
   });
 
-  it('keys list says so when there are no keys', () => {
-    expect(run('keys', 'list')).toBe(EXIT_OK);
+  it('keys list says so when there are no keys', async () => {
+    expect(await run('keys', 'list')).toBe(EXIT_OK);
     expect(out.join('\n')).toContain('No API keys yet');
   });
 
-  it('keys revoke revokes the key', () => {
-    const key = createKey('PC');
+  it('keys revoke revokes the key', async () => {
+    const key = await createKey('PC');
     const found = findApiKey(database.db, key);
     if (found.status !== 'active') throw new Error('expected an active key');
 
-    expect(run('keys', 'revoke', String(found.row.id))).toBe(EXIT_OK);
+    expect(await run('keys', 'revoke', String(found.row.id))).toBe(EXIT_OK);
     expect(findApiKey(database.db, key)).toMatchObject({ status: 'revoked' });
 
-    expect(run('keys', 'revoke', String(found.row.id))).toBe(EXIT_OK);
+    expect(await run('keys', 'revoke', String(found.row.id))).toBe(EXIT_OK);
     expect(out.join('\n')).toContain('already revoked');
 
-    expect(run('keys', 'list')).toBe(EXIT_OK);
+    expect(await run('keys', 'list')).toBe(EXIT_OK);
     expect(out.join('\n')).toContain(`revoked ${now.toISOString()}`);
   });
 
-  it('keys revoke fails for an unknown id', () => {
-    expect(run('keys', 'revoke', '42')).toBe(EXIT_FAILURE);
+  it('keys revoke fails for an unknown id', async () => {
+    expect(await run('keys', 'revoke', '42')).toBe(EXIT_FAILURE);
     expect(err.join('\n')).toContain('No API key with ID 42');
   });
 
@@ -276,8 +276,8 @@ describe('pnpm cli', () => {
     [['backup', 'now']],
     [['restore']],
     [['restore', 'a.db', 'b.db']],
-  ])('prints usage for %j', (argv) => {
-    expect(run(...argv)).toBe(EXIT_USAGE);
+  ])('prints usage for %j', async (argv) => {
+    expect(await run(...argv)).toBe(EXIT_USAGE);
     expect(err.join('\n')).toContain('Usage:');
   });
 
@@ -292,24 +292,24 @@ describe('pnpm cli', () => {
     [['reprocess', '-h']],
     [['backup', '--help']],
     [['restore', '-h']],
-  ])('%j prints usage without creating a key', (argv) => {
-    expect(run(...argv)).toBe(EXIT_OK);
+  ])('%j prints usage without creating a key', async (argv) => {
+    expect(await run(...argv)).toBe(EXIT_OK);
     expect(out.join('\n')).toContain('pnpm cli keys create <name>');
-    expect(run('keys', 'list')).toBe(EXIT_OK);
+    expect(await run('keys', 'list')).toBe(EXIT_OK);
     expect(out.join('\n')).toContain('No API keys yet');
   });
 
   describe('database access', () => {
-    it('only keys create may create a missing database', () => {
-      createKey('PC');
+    it('only keys create may create a missing database', async () => {
+      await createKey('PC');
       expect(opened).toEqual([{ create: true }]);
-      run('keys', 'list');
+      await run('keys', 'list');
       expect(opened).toEqual([{ create: false }]);
-      run('keys', 'revoke', '1');
+      await run('keys', 'revoke', '1');
       expect(opened).toEqual([{ create: false }]);
-      run('rebuild');
+      await run('rebuild');
       expect(opened).toEqual([{ create: false }]);
-      run('reprocess');
+      await run('reprocess');
       expect(opened).toEqual([{ create: false }]);
     });
 
@@ -324,23 +324,23 @@ describe('pnpm cli', () => {
       [['rebuild', '--help']],
       [['backup', '--help']],
       [['restore']],
-    ])('%j never opens the database', (argv) => {
-      run(...argv);
+    ])('%j never opens the database', async (argv) => {
+      await run(...argv);
       expect(opened).toEqual([]);
     });
 
-    it('reports a database that cannot be opened and exits 1', () => {
+    it('reports a database that cannot be opened and exits 1', async () => {
       failOpen = 'No database at /wrong/path.db';
-      expect(run('keys', 'list')).toBe(EXIT_FAILURE);
+      expect(await run('keys', 'list')).toBe(EXIT_FAILURE);
       expect(err).toEqual(['No database at /wrong/path.db']);
       expect(out).toEqual([]);
     });
   });
 
   describe('rebuild and reprocess', () => {
-    it('rebuild projects every event and reports count and time', () => {
+    it('rebuild projects every event and reports count and time', async () => {
       storeSession();
-      expect(run('rebuild')).toBe(EXIT_OK);
+      expect(await run('rebuild')).toBe(EXIT_OK);
       expect(out).toEqual([
         expect.stringMatching(/^Rebuilt derived tables from 3 events in \d+ ms\.$/),
       ]);
@@ -348,17 +348,17 @@ describe('pnpm cli', () => {
       expect(failedEvents(database.db)).toEqual([]);
     });
 
-    it('rebuild works on an empty database', () => {
-      expect(run('rebuild')).toBe(EXIT_OK);
+    it('rebuild works on an empty database', async () => {
+      expect(await run('rebuild')).toBe(EXIT_OK);
       expect(out[0]).toMatch(/^Rebuilt derived tables from 0 events in \d+ ms\.$/);
     });
 
-    it('rebuild lists failed events without payloads and exits 1', () => {
+    it('rebuild lists failed events without payloads and exits 1', async () => {
       const events = storeSession();
       const loot = events[1];
       projections = [...PROJECTIONS, failingFor(new Set([loot?.eventId ?? '']))];
 
-      expect(run('rebuild')).toBe(EXIT_FAILURE);
+      expect(await run('rebuild')).toBe(EXIT_FAILURE);
       expect(out[0]).toMatch(/from 3 events/);
       expect(err).toEqual([
         '1 event failed. Their raw data is kept:',
@@ -368,7 +368,7 @@ describe('pnpm cli', () => {
       expect(err.join('\n')).not.toContain('Vorkath');
     });
 
-    it('reprocess retries failed events only', () => {
+    it('reprocess retries failed events only', async () => {
       const f = eventFactory();
       const events = [f.sessionStart('19:00'), f.loot('19:05'), f.sessionEnd('19:10')];
       const { id } = createApiKey(database.db, TEST_OWNER, 'Test');
@@ -379,27 +379,28 @@ describe('pnpm cli', () => {
       ]);
       expect(failedEvents(database.db)).toHaveLength(1);
 
-      expect(run('reprocess')).toBe(EXIT_OK);
+      expect(await run('reprocess')).toBe(EXIT_OK);
       expect(out).toEqual([
         expect.stringMatching(/^Retried 1 failed event in \d+ ms: 1 succeeded\.$/),
       ]);
       expect(failedEvents(database.db)).toEqual([]);
 
-      expect(run('reprocess')).toBe(EXIT_OK);
+      expect(await run('reprocess')).toBe(EXIT_OK);
       expect(out).toEqual(['No failed events to retry.']);
     });
   });
 
   describe('backup and restore', () => {
     const backupResult = {
-      fileName: `${N}-20261109-120000Z.db`,
-      path: `/data/backups/${N}-20261109-120000Z.db`,
+      fileName: `${N}-20261109-120000Z.db.gz`,
+      path: `/data/backups/${N}-20261109-120000Z.db.gz`,
       createdAt: now,
       sizeBytes: 1_500_000,
+      uncompressedBytes: 6_000_000,
       durationMs: 42,
       count: 3,
       totalSizeBytes: 4_200_000,
-      deleted: [`${N}-20261101-040000Z.db`],
+      deleted: [`${N}-20261101-040000Z.db.gz`],
     };
     const restoreResult = {
       backupCreatedAt: new Date('2026-11-08T04:00:00.000Z'),
@@ -409,34 +410,37 @@ describe('pnpm cli', () => {
       dbFile: `/data/${N}.db`,
     };
 
-    it('backup reports the file, size and what is kept', () => {
-      backups = { ...UNUSED_BACKUPS, create: () => backupResult };
-      expect(run('backup')).toBe(EXIT_OK);
+    it('backup reports the file, size and what is kept', async () => {
+      backups = { ...UNUSED_BACKUPS, create: () => Promise.resolve(backupResult) };
+      expect(await run('backup')).toBe(EXIT_OK);
       expect(out).toEqual([
-        `Backup saved: /data/backups/${N}-20261109-120000Z.db (1.5 MB, 42 ms).`,
+        `Backup saved: /data/backups/${N}-20261109-120000Z.db.gz (1.5 MB, 6.0 MB uncompressed, 42 ms).`,
         '3 backups kept (4.2 MB). Deleted 1 old backup.',
         'Backups on the same disk do not survive a disk failure: copy them elsewhere too.',
       ]);
     });
 
-    it('backup reports a missing database and exits 1', () => {
+    it('backup reports a missing database and exits 1', async () => {
       backups = {
         ...UNUSED_BACKUPS,
         create: () => {
           throw new CliError(`No database at /wrong/${N}.db.`);
         },
       };
-      expect(run('backup')).toBe(EXIT_FAILURE);
+      expect(await run('backup')).toBe(EXIT_FAILURE);
       expect(err).toEqual([`No database at /wrong/${N}.db.`]);
     });
 
-    it('restore passes the file on and says what happened', () => {
+    it('restore passes the file on and says what happened', async () => {
       const files: string[] = [];
       backups = {
         ...UNUSED_BACKUPS,
-        restore: (file) => (files.push(file), { ...restoreResult, migrationsApplied: 2 }),
+        restore: (file) => (
+          files.push(file),
+          Promise.resolve({ ...restoreResult, migrationsApplied: 2 })
+        ),
       };
-      expect(run('restore', `${N}-20261108-040000Z.db`)).toBe(EXIT_OK);
+      expect(await run('restore', `${N}-20261108-040000Z.db`)).toBe(EXIT_OK);
       expect(files).toEqual([`${N}-20261108-040000Z.db`]);
       expect(out).toEqual([
         `Restored ${N}-20261108-040000Z.db (taken 2026-11-08T04:00:00.000Z) to /data/${N}.db.`,
@@ -446,14 +450,14 @@ describe('pnpm cli', () => {
       ]);
     });
 
-    it('restore explains how to stop a running server', () => {
+    it('restore explains how to stop a running server', async () => {
       backups = {
         ...UNUSED_BACKUPS,
         restore: () => {
           throw new InstanceLockedError(`${BRANDING.displayName} is already running on /data.`);
         },
       };
-      expect(run('restore', 'x.db')).toBe(EXIT_FAILURE);
+      expect(await run('restore', 'x.db')).toBe(EXIT_FAILURE);
       expect(err[0]).toBe(`${BRANDING.displayName} is already running on /data.`);
       expect(err.join('\n')).toContain('docker compose stop');
       expect(out).toEqual([]);
@@ -462,14 +466,14 @@ describe('pnpm cli', () => {
     it.each([
       new RestoreError('Nothing was changed. x.db failed the integrity check'),
       new InvalidDatabaseFileError('x.db is not an SQLite database'),
-    ])('restore reports %s and exits 1', (error) => {
+    ])('restore reports %s and exits 1', async (error) => {
       backups = {
         ...UNUSED_BACKUPS,
         restore: () => {
           throw error;
         },
       };
-      expect(run('restore', 'x.db')).toBe(EXIT_FAILURE);
+      expect(await run('restore', 'x.db')).toBe(EXIT_FAILURE);
       expect(err).toEqual([error.message]);
     });
   });

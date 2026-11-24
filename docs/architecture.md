@@ -358,8 +358,17 @@ shared phone after logging out.
   pending (`fireside-pre-migrate-<time>.db`; no copy, no migration), migrate,
   private modes again.
 - **Backups** (`server/src/backup/`): `VACUUM INTO` from a read-only
-  connection, checked with `PRAGMA integrity_check` before it gets its final
-  name. Daily at `BACKUP_TIME` in `TZ`, and at startup when the newest is
+  connection into a temp file, checked with `PRAGMA integrity_check`, then
+  gzipped as a stream (`node:zlib`) into a second temp file, read back
+  through gunzip (CRC-32 and length), and only then moved to
+  `fireside-<time>.db.gz`, never over an existing file. Temp files of an
+  interrupted backup never count and retention removes them. At shutdown the
+  server waits up to 10 seconds for a running backup, then stops it, before
+  it releases the instance lock. Restore
+  reads both `.db.gz` and older uncompressed `.db` backups, and unpacks into
+  `DATA_DIR`. Temp files of an interrupted restore are removed at the next
+  start that takes the instance lock. The copies taken before a migration or restore stay
+  uncompressed. Daily at `BACKUP_TIME` in `TZ`, and at startup when the newest is
   older than 24 hours. Retention keeps daily, weekly and monthly backups, and
   every backup and pre-migrate or pre-restore copy ages out after the longest
   level that is on. `fireside.key` (the two-factor key) is never in a backup.

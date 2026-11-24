@@ -2,7 +2,8 @@ import { BRANDING } from '@fireside/shared';
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type BetterSqlite3 from 'better-sqlite3';
+import { gunzipSync } from 'node:zlib';
+import BetterSqlite3 from 'better-sqlite3';
 import { MIGRATIONS_DIR } from '../db/index.js';
 
 const N = BRANDING.shortName;
@@ -18,6 +19,30 @@ export function tempDir(): { dir: string; remove: () => void } {
       rmSync(dir, { recursive: true, force: true });
     },
   };
+}
+
+/**
+ * Decompresses a gzipped backup into a new folder of its own (never next to
+ * the backups, so folder listings in tests stay as they are). Returns the
+ * plain database file and a function that removes it.
+ */
+export function unzipBackup(path: string): { file: string; remove: () => void } {
+  const { dir, remove } = tempDir();
+  const file = join(dir, 'unzipped.db');
+  writeFileSync(file, gunzipSync(readFileSync(path)));
+  return { file, remove };
+}
+
+/** Runs `use` on a gzipped backup opened read-only, and cleans up after. */
+export function withBackup<T>(path: string, use: (sqlite: BetterSqlite3.Database) => T): T {
+  const { file, remove } = unzipBackup(path);
+  const sqlite = new BetterSqlite3(file, { readonly: true });
+  try {
+    return use(sqlite);
+  } finally {
+    sqlite.close();
+    remove();
+  }
 }
 
 /**

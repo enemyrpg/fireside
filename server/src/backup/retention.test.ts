@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   backupFileName,
   type BackupFile,
+  listBackups,
   markWrittenThisRun,
   parseBackupFileName,
   parseBackupFolderName,
@@ -27,16 +28,26 @@ const at = (iso: string) => Date.parse(iso);
 
 describe('backup file names', () => {
   it('names a backup after its UTC time, to the second', () => {
-    expect(backupFileName(at('2026-11-14T03:00:09.512Z'))).toBe(`${N}-20261114-030009Z.db`);
-    expect(backupFileName(at('2026-11-14T03:00:09.512Z'), 2)).toBe(`${N}-20261114-030009Z-2.db`);
+    expect(backupFileName(at('2026-11-14T03:00:09.512Z'))).toBe(`${N}-20261114-030009Z.db.gz`);
+    expect(backupFileName(at('2026-11-14T03:00:09.512Z'), 2)).toBe(`${N}-20261114-030009Z-2.db.gz`);
     expect(preRestoreFileName(at('2026-11-14T03:00:09Z'))).toBe(
       `${N}-pre-restore-20261114-030009Z.db`,
     );
   });
 
-  it('reads the time back from the name', () => {
-    expect(parseBackupFileName(`${N}-20261114-030009Z.db`)).toBe(at('2026-11-14T03:00:09Z'));
-    expect(parseBackupFileName(`${N}-20261114-030009Z-3.db`)).toBe(at('2026-11-14T03:00:09Z'));
+  it.each([
+    `${N}-20261114-030009Z.db.gz`,
+    `${N}-20261114-030009Z-3.db.gz`,
+    // Uncompressed, from before backups were compressed.
+    `${N}-20261114-030009Z.db`,
+    `${N}-20261114-030009Z-3.db`,
+  ])('reads the time back from %s', (name) => {
+    expect(parseBackupFileName(name)).toBe(at('2026-11-14T03:00:09Z'));
+    expect(parseBackupFolderName(name)).toEqual({
+      fileName: name,
+      kind: 'backup',
+      createdAtMs: at('2026-11-14T03:00:09Z'),
+    });
   });
 
   it.each([
@@ -45,7 +56,13 @@ describe('backup file names', () => {
     `${N}-20261114-250000Z.db`,
     `${N}-20261114-030009.db`,
     `${N}-20261114-030009Z.db.tmp`,
+    `${N}-20261114-030009Z.db.gz.tmp`,
+    `${N}-20261114-030009Z.db.gz.x`,
+    `${N}-20261114-030009Z.gz`,
+    `${N}-20261114-030009Z.db.gz.gz`,
     `.${N}-backup-abc.tmp`,
+    `.${N}-backup-abc.db.tmp`,
+    `.${N}-backup-abc.gz.tmp`,
     `${N}.db`,
     'old-20261114-030009Z.db',
   ])('ignores %s', (name) => {
@@ -90,7 +107,7 @@ describe('retention', () => {
         '20260731',
         '20260630',
       ]
-        .map((day) => `${N}-${day}-030000Z.db`)
+        .map((day) => `${N}-${day}-030000Z.db.gz`)
         .sort(),
     );
   });
@@ -140,7 +157,7 @@ describe('retention', () => {
 
   it('always keeps the newest backup, even with every level at 0', () => {
     expect(names(backupsToKeep(dailyBackups(10), keep(0, 0, 0), OSLO))).toEqual([
-      `${N}-20261114-030000Z.db`,
+      `${N}-20261114-030000Z.db.gz`,
     ]);
     expect(backupsToKeep([], keep(7, 4, 6), OSLO).size).toBe(0);
   });
@@ -184,6 +201,7 @@ describe('max age', () => {
       `${N}-pre-restore-20261114-030009Z.db-shm`,
       `${N}-pre-migrate-20261340-030009Z.db`,
       `.${N}-backup-abc.tmp`,
+      `.${N}-backup-abc.gz.tmp`,
       'notes.txt',
       `my-${N}-20261114-030009Z.db`,
     ]) {
@@ -325,6 +343,65 @@ describe('max age', () => {
         preMigrateFileName(at('2026-11-14T02:00:00Z')),
       ].sort(),
     );
+  });
+
+  it('counts and deletes compressed and uncompressed backups the same way', () => {
+    const { dir, remove } = tempDir();
+    cleanup = remove;
+    // 400 daily backups: the newest 100 `.db.gz`, the older ones from before compression (`.db`).
+    const all = Array.from({ length: 400 }, (_, i) => {
+      const ms = at('2026-11-14T03:00:00Z') - i * DAY_MS;
+      const gz = backupFileName(ms);
+      return i < 100 ? gz : gz.slice(0, -'.gz'.length);
+    });
+    for (const name of all) writeFileSync(join(dir, name), 'b');
+    expect(listBackups(dir)).toHaveLength(400);
+
+    // The same rules as for 400 backups of one kind.
+    const asIfAllGz = all.map((name) => (name.endsWith('.gz') ? name : `${name}.gz`));
+    const keptIfAllGz = backupsToKeep(
+      asIfAllGz.map((fileName) => file(fileName)),
+      DEFAULT_KEEP,
+      OSLO,
+    );
+    const clock = new ReferenceClock(() => 10 * 365 * DAY_MS);
+    pruneBackups(dir, DEFAULT_KEEP, OSLO, { nowMs: NOW, protect: none, clock });
+    const left = readdirSync(dir).sort();
+    expect(left.map((name) => (name.endsWith('.gz') ? name : `${name}.gz`)).sort()).toEqual(
+      [...keptIfAllGz].sort(),
+    );
+    // Both kinds survive where the rules keep them: the newest months are
+    // compressed, the oldest kept monthly ones are from before compression.
+    expect(left.some((name) => name.endsWith('.db'))).toBe(true);
+    expect(left.some((name) => name.endsWith('.db.gz'))).toBe(true);
+    expect(listBackups(dir).map((backup) => backup.sizeBytes)).toEqual(left.map(() => 1));
+  });
+
+  it('keeps the compressed backup when it was also unpacked in place (gunzip -k)', () => {
+    const gz = backupFileName(at('2026-11-14T03:00:00Z'));
+    const unpacked = gz.slice(0, -'.gz'.length);
+    for (const order of [
+      [unpacked, gz],
+      [gz, unpacked],
+    ]) {
+      const files = order.map((name) => file(name));
+      expect(backupsToKeep(files, DEFAULT_KEEP, OSLO)).toEqual(new Set([gz]));
+      expect(filesToDelete(files, DEFAULT_KEEP, OSLO, { referenceMs: NOW, protect: none })).toEqual(
+        [unpacked],
+      );
+    }
+  });
+
+  it('keeps the newest backup whichever kind it is', () => {
+    const plain = backupFileName(at('2026-11-14T03:00:00Z')).slice(0, -'.gz'.length);
+    const gz = backupFileName(at('2026-11-13T03:00:00Z'));
+    const files = [file(plain), file(gz)];
+    expect(
+      filesToDelete(files, { daily: 0, weekly: 0, monthly: 0 }, OSLO, {
+        referenceMs: NOW,
+        protect: none,
+      }),
+    ).toEqual([gz]);
   });
 
   it('leaves the usual daily, weekly and monthly backups alone', () => {

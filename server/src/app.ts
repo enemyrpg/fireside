@@ -156,12 +156,15 @@ export function buildApp({
       }
     });
     // preClose runs before every onClose hook, so the jobs are stopped before
-    // the database closes.
-    app.addHook('preClose', () => {
+    // the database closes and the instance lock is released.
+    app.addHook('preClose', async () => {
       running?.stop();
-      backupJob?.stop();
       pricesJob?.stop();
       clogJob?.stop();
+      // A backup still compressing gets a few seconds to finish, then is
+      // stopped: it must not rename or prune in BACKUP_DIR once the lock is
+      // released (a `restore` may have taken it).
+      await backupJob?.shutdown();
     });
   }
   // A sync that is still out makes no further request and stores nothing.
