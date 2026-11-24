@@ -31,9 +31,14 @@ function blankCodeSpans(line: string): string {
  * punctuation removed (except `-` and `_`), spaces turned into `-`.
  */
 export function githubSlug(heading: string): string {
-  return heading
-    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
-    .replace(/<[^>]+>/g, '')
+  let text = heading.replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1');
+  // Strip HTML tags until none are left, so no tag can be rebuilt from the pieces.
+  let previous: string;
+  do {
+    previous = text;
+    text = text.replace(/<[^>]+>/g, '');
+  } while (text !== previous);
+  return text
     .toLowerCase()
     .replace(/[^\p{L}\p{M}\p{N}\p{Pc} -]/gu, '')
     .replace(/ /g, '-');

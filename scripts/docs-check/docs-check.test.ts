@@ -24,6 +24,8 @@ describe('githubSlug', () => {
     ['Keep BACKUP_DIR', 'keep-backup_dir'],
     ['A [link](x.md) in a heading', 'a-link-in-a-heading'],
     ['Café Zoë', 'café-zoë'],
+    ['A <code>tag</code> heading', 'a-tag-heading'],
+    ['Nested <a<b>>tags', 'nested-tags'],
   ])('%s → %s', (heading, slug) => {
     expect(githubSlug(heading)).toBe(slug);
   });

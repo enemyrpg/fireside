@@ -25,6 +25,7 @@ import {
   xpSnapshotSkills,
   xpSnapshots,
 } from '../db/schema.js';
+import { ApiError } from '../errors.js';
 import { cursorParts, decodeCursor, encodeCursor } from './cursor.js';
 import { dropRows, type DropRow } from './loot.js';
 import { pets } from './pets.js';
@@ -473,17 +474,31 @@ export function feed(db: Queryable, options: FeedOptions): FeedResponse {
     return compareFeedEntries({ at, type: typeOfRank(rank), id }, entry) < 0;
   };
 
-  const sources: Record<FeedType, () => Source> = {
-    session: () => sessionSource(db, accountIds),
-    level: () => levelSource(db, accountIds),
-    clog: () => clogSource(db, accountIds),
-    pet: () => petSource(db, accountIds),
-    drop: () => dropSource(db, accountIds, options.minValue, types.includes('clog')),
+  const sourceFor = (type: FeedType): Source => {
+    switch (type) {
+      case 'session':
+        return sessionSource(db, accountIds);
+      case 'level':
+        return levelSource(db, accountIds);
+      case 'clog':
+        return clogSource(db, accountIds);
+      case 'pet':
+        return petSource(db, accountIds);
+      case 'drop':
+        return dropSource(db, accountIds, options.minValue, types.includes('clog'));
+      default: {
+        // A new FeedType without a case fails typecheck here.
+        const unknown: never = type;
+        throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid request', [
+          { path: 'query.types', message: `Unknown feed type: ${String(unknown)}` },
+        ]);
+      }
+    }
   };
 
   const candidates: FeedEntry[] = [];
   for (const type of types) {
-    const source = sources[type]();
+    const source = sourceFor(type);
     const before = cursor?.[0];
     if (before !== undefined) candidates.push(...source.at(before).filter(after));
     let rows = source.before(before, limit + 1);

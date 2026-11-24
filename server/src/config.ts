@@ -166,7 +166,7 @@ function envSchema(baseDir: string) {
       .string()
       // Printable ASCII without spaces and without ( ) \ ", which have a
       // meaning inside the `( … )` comment of a User-Agent header.
-      .regex(/^[!#-'*-[\]-~]+$/, {
+      .regex(/^[!#$%&'*+,\-./0-9:;<=>?@A-Z[\]^_`a-z{|}~]+$/, {
         error:
           'Must be an email address or URL, without spaces, quotes, parentheses or backslashes',
       })

@@ -306,4 +306,12 @@ describe('the feed', () => {
     const run = setUp();
     expect(() => page(run, { cursor: 'bm9wZQ' })).toThrow(ApiError);
   });
+
+  it.each(['constructor', 'toString', '__proto__'])(
+    'rejects the inherited name %s as a type with 400, never calling it',
+    (type) => {
+      const run = setUp();
+      expect(() => page(run, { types: [type as FeedType] })).toThrow(ApiError);
+    },
+  );
 });
