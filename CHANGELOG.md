@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.2](https://github.com/enemyrpg/fireside/compare/v0.1.1...v0.1.2) (2026-11-24)
+
+
+### Bug fixes
+
+* harden code flagged by CodeQL ([#24](https://github.com/enemyrpg/fireside/issues/24)) ([a8627b8](https://github.com/enemyrpg/fireside/commit/a8627b8c72a1636c588cd4f238dd1581e30bfca2))
+* **server:** one kill count observation per kill ([#29](https://github.com/enemyrpg/fireside/issues/29)) ([6f71902](https://github.com/enemyrpg/fireside/commit/6f719028d51ff5d4fb0f147400978d8c289f2a4e))
+* **web:** evenly spaced x-axis labels in charts ([#30](https://github.com/enemyrpg/fireside/issues/30)) ([1f5a997](https://github.com/enemyrpg/fireside/commit/1f5a9979d3335b04a0d58b687117b380427a8b96))
+* **web:** keep the top bar on one row on phones in landscape ([#28](https://github.com/enemyrpg/fireside/issues/28)) ([cf2f413](https://github.com/enemyrpg/fireside/commit/cf2f4133e48fe96997d271ea87d56f1b2a8a783c))
+
 ## [0.1.1](https://github.com/enemyrpg/fireside/compare/v0.1.0...v0.1.1) (2026-11-23)
 
 
