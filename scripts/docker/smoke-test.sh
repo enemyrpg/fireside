@@ -99,10 +99,19 @@ done
 # Backups: one at startup (new database), in the bind-mounted folder.
 backups="$FIRESIDE_DATA_PATH/backups"
 newest_backup() {
-  find "$backups" -maxdepth 1 -name 'fireside-*Z*.db' -printf '%f\n' 2> /dev/null | sort | tail -n 1
+  find "$backups" -maxdepth 1 -name 'fireside-*Z*.db.gz' -printf '%f\n' 2> /dev/null | sort | tail -n 1
 }
+# Compressed after the server listens, so it may take a moment.
+for _ in $(seq 1 30); do
+  [ -n "$(newest_backup)" ] && break
+  sleep 1
+done
 if [ -z "$(newest_backup)" ]; then
   echo "::error::No startup backup in FIRESIDE_DATA_PATH/backups"
+  exit 1
+fi
+if ! gzip -t "$backups/$(newest_backup)"; then
+  echo "::error::The startup backup is not a complete gzip file"
   exit 1
 fi
 # The database, its -wal and -shm, the lock and the startup backup.

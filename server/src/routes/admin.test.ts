@@ -175,6 +175,26 @@ describe('GET /api/v1/admin/backups', () => {
     expect(response.body).not.toContain(dir);
   });
 
+  it('reports compressed backups by name, time and size on disk, counted with older uncompressed ones', async () => {
+    const { app, dir } = appWithBackupDir();
+    // From before backups were compressed.
+    writeFileSync(join(dir, `${N}-20261108-030000Z.db`), 'x'.repeat(1000));
+    writeFileSync(join(dir, `${N}-20261109-030000Z.db.gz`), 'x'.repeat(120));
+    // Not counted: a compressed backup that was never finished.
+    writeFileSync(join(dir, `.${N}-backup-abc.gz.tmp`), 'x'.repeat(50));
+
+    const response = await app.inject({ method: 'GET', url: '/api/v1/admin/backups' });
+    expect(backupStatusResponseSchema.parse(response.json())).toMatchObject({
+      latest: {
+        fileName: `${N}-20261109-030000Z.db.gz`,
+        createdAt: '2026-11-09T03:00:00.000Z',
+        sizeBytes: 120,
+      },
+      count: 2,
+      totalSizeBytes: 1120,
+    });
+  });
+
   it('reports no backups yet, and no next run when automatic backups are off', async () => {
     const { app } = appWithBackupDir({ BACKUP_ENABLED: 'false' });
     const response = await app.inject({ method: 'GET', url: '/api/v1/admin/backups' });

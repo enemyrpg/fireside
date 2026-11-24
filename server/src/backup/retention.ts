@@ -7,6 +7,7 @@ import {
   listBackupFolderFiles,
   newestFirst,
   parseBackupFolderName,
+  removeLeftoverTempFiles,
   type BackupEntry,
   type BackupFile,
 } from './files.js';
@@ -28,6 +29,9 @@ import {
 // can't wipe the folder, and the time the server was stopped doesn't count:
 // retention only runs while the server runs (after each backup and at
 // start). The daily, weekly and monthly levels still use the file times.
+//
+// Temp files left by an interrupted backup (files.ts) are removed too, once
+// they are an hour old, so a backup another process is writing is left alone.
 //
 // Never deleted: the newest backup, a copy this process took that is younger
 // than the max age by the monotonic clock (with every level at 0: never in
@@ -223,18 +227,24 @@ export interface PruneOptions {
   clock?: ReferenceClock;
   /** Logs once when the wall clock is more than a day ahead of the backups. */
   onClockAhead?: ClockAheadHandler;
+  /** Called with the temp files of interrupted backups that were removed, if any. */
+  onLeftoverTempFiles?: (fileNames: string[]) => void;
 }
 
 /**
- * Deletes backups in `dir` that retention doesn't keep, and every backup or
- * copy older than the max age. Returns the deleted names.
+ * Deletes backups in `dir` that retention doesn't keep, every backup or copy
+ * older than the max age, and temp files left by interrupted backups. Returns
+ * the deleted backups and copies.
  */
 export function pruneBackups(
   dir: string,
   keep: RetentionConfig,
   timeZone: string,
-  { nowMs, protect, clock = processClock, onClockAhead }: PruneOptions,
+  { nowMs, protect, clock = processClock, onClockAhead, onLeftoverTempFiles }: PruneOptions,
 ): string[] {
+  // By the real clock, not `nowMs`: it is compared with the files' mtime.
+  const leftovers = removeLeftoverTempFiles(dir);
+  if (leftovers.length > 0) onLeftoverTempFiles?.(leftovers);
   const files = listBackupFolderFiles(dir);
   const written = new Set(filesWrittenThisRun().keys());
   const referenceMs = clock.referenceMs(dir, files, nowMs, written, onClockAhead);

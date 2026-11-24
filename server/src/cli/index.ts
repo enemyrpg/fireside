@@ -1,11 +1,10 @@
-import { existsSync } from 'node:fs';
-import { isAbsolute, join, resolve } from 'node:path';
 import { systemClock } from '../auth/api-keys.js';
 import { createBackup } from '../backup/backup.js';
 import { restoreBackup } from '../backup/restore.js';
 import { ConfigError, loadConfig, loadEnvFile, type Config } from '../config.js';
 import { databasePath, type Database } from '../db/index.js';
 import { usePrivateUmask } from '../fs-modes.js';
+import { resolveBackupFile } from './backup-file.js';
 import { CliDataDir } from './database.js';
 import { readPassword, stdinIsTerminal } from './password-input.js';
 import { runCliAsync, type OpenDbOptions } from './run.js';
@@ -46,17 +45,6 @@ function openDb(options: OpenDbOptions) {
   return database.db;
 }
 
-/**
- * The backup file as typed: relative to the folder `pnpm cli` was run from
- * (`INIT_CWD`; pnpm itself runs the script in server/). A bare name that
- * isn't there is looked up in BACKUP_DIR, so in Docker the file name is enough.
- */
-function resolveBackupFile(file: string): string {
-  const fromCwd = resolve(process.env.INIT_CWD ?? process.cwd(), file);
-  if (existsSync(fromCwd) || isAbsolute(file) || file.includes('/')) return fromCwd;
-  return join(config.backup.dir, file);
-}
-
 try {
   process.exitCode = await runCliAsync(process.argv.slice(2), {
     openDb,
@@ -80,7 +68,11 @@ try {
         });
       },
       restore: (file) => {
-        const path = resolveBackupFile(file);
+        const path = resolveBackupFile(
+          file,
+          process.env.INIT_CWD ?? process.cwd(),
+          config.backup.dir,
+        );
         console.error(`Backup: ${path}`);
         console.error(`Database: ${dbFile}`);
         return restoreBackup({ file: path, dataDir, backupDir: config.backup.dir });

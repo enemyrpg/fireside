@@ -1,20 +1,26 @@
 import { BRANDING } from '@fireside/shared';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
+import { gzipSync } from 'node:zlib';
 import BetterSqlite3 from 'better-sqlite3';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createApiKey } from '../auth/api-keys.js';
 import { createSecretBox, fileKeyStore, keyFilePath } from '../auth/secret-box.js';
 import { databasePath, openDatabase } from '../db/index.js';
-import {
-  createBackup,
-  InvalidDatabaseFileError,
-  openCheckedDatabase,
-  removeLeftoverTempFiles,
-} from './backup.js';
-import { listBackups } from './files.js';
-import { tempDir } from './testing.js';
+import { createBackup, InvalidDatabaseFileError, openCheckedDatabase } from './backup.js';
+import { listBackupFolderFiles, listBackups, removeLeftoverTempFiles } from './files.js';
+import * as gzip from './gzip.js';
+import { pruneBackups, ReferenceClock } from './retention.js';
+import { dumpTables, tempDir, unzipBackup, withBackup } from './testing.js';
 import { TEST_OWNER } from '../test-utils.js';
 
 const N = BRANDING.shortName;
@@ -89,7 +95,7 @@ describe('createBackup', () => {
       database.sqlite.prepare('SELECT count(*) FROM events').pluck().get() as number;
     for (let i = 0; i < 5; i++) {
       const before = count();
-      const result = createBackup({
+      const result = await createBackup({
         dbFile,
         dir: backupDir,
         keep: { daily: 0, weekly: 0, monthly: 0 },
@@ -99,7 +105,8 @@ describe('createBackup', () => {
       });
       const after = count();
 
-      const backup = openCheckedDatabase(result.path);
+      const unzipped = unzipBackup(result.path);
+      const backup = openCheckedDatabase(unzipped.file);
       try {
         const inBackup = backup.prepare('SELECT count(*) FROM events').pluck().get() as number;
         expect(inBackup).toBeGreaterThanOrEqual(before);
@@ -109,61 +116,70 @@ describe('createBackup', () => {
         expect(backup.pragma('journal_mode', { simple: true })).toBe('delete');
       } finally {
         backup.close();
+        unzipped.remove();
       }
-      expect(existsSync(`${result.path}-wal`)).toBe(false);
     }
     expect(count()).toBeGreaterThan(BATCH);
-    expect(readdirSync(backupDir)).toEqual([`${N}-20261114-030004Z.db`]);
+    // No `-wal` beside it, and no temp file left.
+    expect(readdirSync(backupDir)).toEqual([`${N}-20261114-030004Z.db.gz`]);
   });
 
-  it('includes data that is still only in the WAL file', () => {
+  it('includes data that is still only in the WAL file', async () => {
     const { dbFile, database, backupDir } = setup();
     createApiKey(database.db, TEST_OWNER, 'Only in WAL');
     expect(statSync(`${dbFile}-wal`).size).toBeGreaterThan(0);
 
-    const result = createBackup({ dbFile, dir: backupDir, keep: KEEP, timeZone: 'UTC' });
-    const backup = new BetterSqlite3(result.path, { readonly: true });
-    try {
+    const result = await createBackup({ dbFile, dir: backupDir, keep: KEEP, timeZone: 'UTC' });
+    withBackup(result.path, (backup) => {
       expect(backup.prepare('SELECT name FROM api_keys').pluck().all()).toEqual(['Only in WAL']);
-    } finally {
-      backup.close();
-    }
+    });
     expect(result).toMatchObject({ count: 1, deleted: [] });
     expect(result.sizeBytes).toBe(statSync(result.path).size);
     expect(result.totalSizeBytes).toBe(result.sizeBytes);
   });
 
-  it('never copies the 2FA key file next to the database', () => {
+  it('never copies the 2FA key file next to the database', async () => {
     const { dir, dbFile, database, backupDir } = setup();
     const dataDir = join(dir, 'data');
     const sealed = createSecretBox(fileKeyStore(dataDir)).seal(1, 'JBSWY3DPEHPK3PXP');
     database.sqlite.prepare('UPDATE users SET totp_secret = ? WHERE id = 1').run(sealed);
     expect(existsSync(keyFilePath(dataDir))).toBe(true);
 
-    const result = createBackup({ dbFile, dir: backupDir, keep: KEEP, timeZone: 'UTC' });
+    const result = await createBackup({ dbFile, dir: backupDir, keep: KEEP, timeZone: 'UTC' });
     expect(readdirSync(backupDir)).toEqual([result.fileName]);
     // The backup holds only the encrypted secret, never the key.
-    const backup = new BetterSqlite3(result.path, { readonly: true });
-    try {
+    withBackup(result.path, (backup) => {
       expect(backup.prepare('SELECT totp_secret FROM users').pluck().get()).toBe(sealed);
-    } finally {
-      backup.close();
-    }
+    });
   });
 
-  it('gives a second backup in the same second its own name', () => {
+  it('gives a second backup in the same second its own name', async () => {
     const { dbFile, backupDir } = setup();
     const now = () => new Date('2026-11-14T03:00:00.000Z');
     const options = { dbFile, dir: backupDir, keep: KEEP, timeZone: 'UTC', now };
-    expect(createBackup(options).fileName).toBe(`${N}-20261114-030000Z.db`);
-    expect(createBackup(options).fileName).toBe(`${N}-20261114-030000Z-2.db`);
+    expect((await createBackup(options)).fileName).toBe(`${N}-20261114-030000Z.db.gz`);
+    expect((await createBackup(options)).fileName).toBe(`${N}-20261114-030000Z-2.db.gz`);
     // Both are on the same day: retention keeps the newest one.
     expect(listBackups(backupDir).map((backup) => backup.fileName)).toEqual([
-      `${N}-20261114-030000Z-2.db`,
+      `${N}-20261114-030000Z-2.db.gz`,
     ]);
   });
 
-  it('applies retention after each backup', () => {
+  it('never shares a time and copy number with an uncompressed backup', async () => {
+    const { dbFile, backupDir } = setup();
+    mkdirSync(backupDir, { recursive: true });
+    writeFileSync(join(backupDir, `${N}-20261114-030000Z.db`), 'an older backup');
+    const result = await createBackup({
+      dbFile,
+      dir: backupDir,
+      keep: { daily: 0, weekly: 0, monthly: 0 },
+      timeZone: 'UTC',
+      now: () => new Date('2026-11-14T03:00:00.000Z'),
+    });
+    expect(result.fileName).toBe(`${N}-20261114-030000Z-2.db.gz`);
+  });
+
+  it('applies retention after each backup', async () => {
     const { dbFile, backupDir } = setup();
     let day = 1;
     const run = () =>
@@ -174,27 +190,104 @@ describe('createBackup', () => {
         timeZone: 'UTC',
         now: () => new Date(Date.UTC(2026, 10, day++, 3)),
       });
-    for (let i = 0; i < 5; i++) run();
+    for (let i = 0; i < 5; i++) await run();
     expect(listBackups(backupDir).map((backup) => backup.fileName)).toEqual([
-      `${N}-20261105-030000Z.db`,
-      `${N}-20261104-030000Z.db`,
-      `${N}-20261103-030000Z.db`,
+      `${N}-20261105-030000Z.db.gz`,
+      `${N}-20261104-030000Z.db.gz`,
+      `${N}-20261103-030000Z.db.gz`,
     ]);
-    expect(run().deleted).toEqual([`${N}-20261103-030000Z.db`]);
+    expect((await run()).deleted).toEqual([`${N}-20261103-030000Z.db.gz`]);
   });
 
-  it('fails without leaving files when the database is missing', () => {
+  it('fails without leaving files when the database is missing', async () => {
     const { dir } = setup();
     const backupDir = join(dir, 'other-backups');
-    expect(() =>
+    await expect(
       createBackup({
         dbFile: join(dir, 'missing.db'),
         dir: backupDir,
         keep: KEEP,
         timeZone: 'UTC',
       }),
-    ).toThrow(/Can't open the database/);
+    ).rejects.toThrow(/Can't open the database/);
     expect(readdirSync(backupDir)).toEqual([]);
+  });
+
+  it('writes a gzipped, private file that holds the same rows', async () => {
+    const { dbFile, database, backupDir } = setup();
+    createApiKey(database.db, TEST_OWNER, 'Laptop');
+    const result = await createBackup({ dbFile, dir: backupDir, keep: KEEP, timeZone: 'UTC' });
+
+    expect(result.fileName).toMatch(new RegExp(`^${N}-\\d{8}-\\d{6}Z\\.db\\.gz$`));
+    expect(readFileSync(result.path).subarray(0, 2)).toEqual(Buffer.from([0x1f, 0x8b]));
+    expect(statSync(result.path).mode & 0o777).toBe(0o600);
+    expect(result.sizeBytes).toBe(statSync(result.path).size);
+    expect(result.uncompressedBytes).toBeGreaterThan(result.sizeBytes);
+    // Only the backup is left: no uncompressed copy, no temp file.
+    expect(readdirSync(backupDir)).toEqual([result.fileName]);
+
+    const live = dumpTables(database.sqlite);
+    withBackup(result.path, (backup) => {
+      expect(dumpTables(backup)).toEqual(live);
+    });
+  });
+
+  it('leaves nothing that counts as a backup when compressing fails', async () => {
+    const { dbFile, backupDir } = setup();
+    const failing = vi.spyOn(gzip, 'gzipFile').mockImplementation((_source, target) => {
+      // Half a file, as a crash or a full disk would leave it.
+      writeFileSync(target, gzipSync(Buffer.alloc(1 << 16)).subarray(0, 100));
+      return Promise.reject(new Error('ENOSPC: no space left on device'));
+    });
+    try {
+      await expect(
+        createBackup({ dbFile, dir: backupDir, keep: KEEP, timeZone: 'UTC' }),
+      ).rejects.toThrow(/ENOSPC/);
+    } finally {
+      failing.mockRestore();
+    }
+    expect(readdirSync(backupDir)).toEqual([]);
+  });
+
+  it('leaves nothing that counts as a backup when the gzip stream fails', async () => {
+    const { dbFile, backupDir } = setup();
+    // A real stream error: the source can't be read once the target is open.
+    const real = gzip.gzipFile;
+    const failing = vi
+      .spyOn(gzip, 'gzipFile')
+      .mockImplementation((_source, target) => real(join(backupDir, 'gone'), target));
+    try {
+      await expect(
+        createBackup({ dbFile, dir: backupDir, keep: KEEP, timeZone: 'UTC' }),
+      ).rejects.toThrow(/ENOENT/);
+    } finally {
+      failing.mockRestore();
+    }
+    expect(readdirSync(backupDir)).toEqual([]);
+  });
+
+  it('never counts a half-written temp file, and retention removes it after an hour', () => {
+    const { backupDir } = setup();
+    mkdirSync(backupDir, { recursive: true });
+    // What a backup killed while compressing leaves behind.
+    const leftovers = [`.${N}-backup-0a1b2c.db.tmp`, `.${N}-backup-0a1b2c.gz.tmp`];
+    for (const name of leftovers) writeFileSync(join(backupDir, name), 'half');
+    const fresh = `.${N}-backup-3d4e5f.gz.tmp`;
+    writeFileSync(join(backupDir, fresh), 'being written');
+    const twoHoursAgo = new Date(Date.now() - 2 * 3_600_000);
+    for (const name of leftovers) utimesSync(join(backupDir, name), twoHoursAgo, twoHoursAgo);
+
+    expect(listBackups(backupDir)).toEqual([]);
+    expect(listBackupFolderFiles(backupDir)).toEqual([]);
+
+    const removed: string[] = [];
+    pruneBackups(backupDir, KEEP, 'UTC', {
+      nowMs: Date.now(),
+      clock: new ReferenceClock(() => 0),
+      onLeftoverTempFiles: (names) => removed.push(...names),
+    });
+    expect(removed.sort()).toEqual([...leftovers].sort());
+    expect(readdirSync(backupDir)).toEqual([fresh]);
   });
 
   it('removes only temp files older than an hour', () => {

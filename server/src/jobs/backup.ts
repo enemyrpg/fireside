@@ -1,6 +1,6 @@
 import { addDays, DAY_MS, fromLocal, toLocal, type BackupStatusResponse } from '@fireside/shared';
 import { systemClock, type Clock } from '../auth/api-keys.js';
-import { createBackup, errorMessage, removeLeftoverTempFiles } from '../backup/backup.js';
+import { createBackup, errorMessage } from '../backup/backup.js';
 import { listBackups, type BackupEntry } from '../backup/files.js';
 import { pruneBackups } from '../backup/retention.js';
 import type { BackupConfig } from '../config.js';
@@ -48,6 +48,8 @@ export interface BackupJobState {
 
 export interface BackupJob extends RunningJob {
   state(): BackupJobState;
+  /** Resolves when the backup that is running (if any) has finished. For tests and shutdown. */
+  idle(): Promise<void>;
 }
 
 /**
@@ -82,9 +84,13 @@ export function startBackupJob({
     );
   };
 
-  const runBackup = (reason: 'startup' | 'scheduled') => {
+  // The backup in flight, if any. Compressing takes a while on a large
+  // database: a tick meanwhile doesn't start a second one.
+  let running: Promise<void> | undefined;
+
+  const backupOnce = async (reason: 'startup' | 'scheduled') => {
     try {
-      const result = createBackup({
+      const result = await createBackup({
         dbFile,
         dir: config.dir,
         keep: config.keep,
@@ -98,6 +104,7 @@ export function startBackupJob({
           reason,
           file: result.fileName,
           sizeBytes: result.sizeBytes,
+          uncompressedBytes: result.uncompressedBytes,
           durationMs: result.durationMs,
           kept: result.count,
           deleted: result.deleted.length,
@@ -110,8 +117,16 @@ export function startBackupJob({
     }
   };
 
+  const runBackup = (reason: 'startup' | 'scheduled') => {
+    if (running) return;
+    running = backupOnce(reason).finally(() => {
+      running = undefined;
+    });
+  };
+
   const tick = () => {
-    if (stopped) return;
+    // A backup still running when the time comes: try again next minute.
+    if (stopped || running) return;
     const nowMs = now().getTime();
     if (nowMs < nextRunAt) return;
     nextRunAt = nextBackupTime(nowMs, config.time, timeZone);
@@ -124,6 +139,9 @@ export function startBackupJob({
     const deleted = pruneBackups(config.dir, config.keep, timeZone, {
       nowMs: now().getTime(),
       onClockAhead,
+      onLeftoverTempFiles: (removed) => {
+        log.warn({ removed }, 'Removed unfinished backup files');
+      },
     });
     if (deleted.length > 0) log.info({ deleted: deleted.length }, 'Removed old backups');
   } catch (error) {
@@ -132,8 +150,6 @@ export function startBackupJob({
 
   if (config.enabled) {
     try {
-      const removed = removeLeftoverTempFiles(config.dir, now);
-      if (removed.length > 0) log.warn({ removed }, 'Removed unfinished backup files');
       const newest = listBackups(config.dir)[0];
       if (!newest || now().getTime() - newest.createdAtMs > STARTUP_BACKUP_AGE_MS) {
         runBackup('startup');
@@ -157,6 +173,9 @@ export function startBackupJob({
       nextRunAt: config.enabled ? new Date(nextRunAt) : null,
       lastError,
     }),
+    idle: async () => {
+      await running;
+    },
   };
 }
 

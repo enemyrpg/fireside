@@ -8,9 +8,9 @@ import {
   readFileSync,
   writeFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import BetterSqlite3 from 'better-sqlite3';
-import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { rebuildDerivedTables } from '../admin/rebuild.js';
 import { createApiKey, listApiKeys } from '../auth/api-keys.js';
 import { databasePath, openDatabase, type Database } from '../db/index.js';
@@ -18,10 +18,12 @@ import { storeIcons } from '../icons/store.js';
 import { generateSeed } from '../seed/generator/generate.js';
 import { seedInProcess } from '../seed/in-process.js';
 import { testConfig, TEST_OWNER } from '../test-utils.js';
+import * as backupModule from './backup.js';
 import { createBackup } from './backup.js';
+import * as gzip from './gzip.js';
 import { acquireInstanceLock, InstanceLockedError, lockPath } from './lock.js';
 import { restoreBackup, RestoreError } from './restore.js';
-import { dumpTables, migrationsWithExtra, tempDir } from './testing.js';
+import { dumpTables, migrationsWithExtra, tempDir, unzipBackup, withBackup } from './testing.js';
 
 const N = BRANDING.shortName;
 
@@ -97,67 +99,84 @@ describe('restore', () => {
     return { root, dataDir, backupDir, dbFile };
   }
 
-  function backup(dbFile: string, backupDir: string) {
-    return createBackup({ dbFile, dir: backupDir, keep: KEEP, timeZone: TZ, now: NOW }).path;
+  /** A (gzipped) backup, as the server takes them. */
+  async function backup(dbFile: string, backupDir: string) {
+    return (await createBackup({ dbFile, dir: backupDir, keep: KEEP, timeZone: TZ, now: NOW }))
+      .path;
   }
 
-  it('gives identical content in every table, also after a rebuild', { timeout: 30_000 }, () => {
+  /** An uncompressed backup, as versions before compression took them. */
+  async function plainBackup(dbFile: string, backupDir: string) {
+    const gz = await backup(dbFile, backupDir);
+    const { file, remove } = unzipBackup(gz);
+    const plain = gz.slice(0, -'.gz'.length);
+    copyFileSync(file, plain);
+    remove();
+    return plain;
+  }
+
+  it(
+    'gives identical content in every table, also after a rebuild',
+    { timeout: 30_000 },
+    async () => {
+      const a = instance();
+      const live = open(a.dbFile);
+      // Something only in the WAL when the backup is taken.
+      createApiKey(live.db, TEST_OWNER, 'Before backup');
+      // Icons are assets, not events: in the backup, and untouched by rebuild.
+      const icon = makeSolidPng(32, 32, [200, 60, 40, 255]);
+      storeIcons(
+        live.db,
+        [
+          { itemId: 4151, png: encodeBase64(icon) },
+          { kind: 'BOSS', key: 'Zulrah', png: encodeBase64(icon) },
+        ],
+        NOW(),
+      );
+      const file = await backup(a.dbFile, a.backupDir);
+      expect(file.endsWith('.db.gz')).toBe(true);
+      const atBackup = dumpTables(live.sqlite);
+      const tables = atBackup.tables as Record<string, unknown[]>;
+      expect(tables.events?.length).toBeGreaterThan(100);
+      expect(tables.sessions?.length).toBeGreaterThan(0);
+      expect(tables.item_icons).toEqual([
+        expect.objectContaining({ item_id: 4151, png: Buffer.from(icon) }),
+      ]);
+      expect(tables.named_icons).toEqual([
+        expect.objectContaining({ kind: 'BOSS', key: 'Zulrah', png: Buffer.from(icon) }),
+      ]);
+
+      // Into an empty data folder.
+      const b = { dataDir: join(dir(), 'data') };
+      const result = await restoreBackup({
+        file,
+        dataDir: b.dataDir,
+        backupDir: join(b.dataDir, 'backups'),
+        now: NOW,
+      });
+      expect(result).toMatchObject({
+        backupCreatedAt: NOW(),
+        migrationsApplied: 0,
+        previousSavedTo: null,
+      });
+      expect(dumpFile(result.dbFile)).toEqual(atBackup);
+
+      // A rebuild of both gives the same tables again.
+      const restored = open(result.dbFile);
+      const rebuildNow = () => new Date('2026-11-14T13:00:00.000Z');
+      rebuildDerivedTables(live.db, { now: rebuildNow });
+      rebuildDerivedTables(restored.db, { now: rebuildNow });
+      expect(dumpTables(restored.sqlite)).toEqual(dumpTables(live.sqlite));
+      expect((dumpTables(restored.sqlite).tables as Record<string, unknown[]>).item_icons).toEqual(
+        tables.item_icons,
+      );
+    },
+  );
+
+  it('replaces the current database and keeps a copy of it, WAL included', async () => {
     const a = instance();
-    const live = open(a.dbFile);
-    // Something only in the WAL when the backup is taken.
-    createApiKey(live.db, TEST_OWNER, 'Before backup');
-    // Icons are assets, not events: in the backup, and untouched by rebuild.
-    const icon = makeSolidPng(32, 32, [200, 60, 40, 255]);
-    storeIcons(
-      live.db,
-      [
-        { itemId: 4151, png: encodeBase64(icon) },
-        { kind: 'BOSS', key: 'Zulrah', png: encodeBase64(icon) },
-      ],
-      NOW(),
-    );
-    const file = backup(a.dbFile, a.backupDir);
-    const atBackup = dumpTables(live.sqlite);
-    const tables = atBackup.tables as Record<string, unknown[]>;
-    expect(tables.events?.length).toBeGreaterThan(100);
-    expect(tables.sessions?.length).toBeGreaterThan(0);
-    expect(tables.item_icons).toEqual([
-      expect.objectContaining({ item_id: 4151, png: Buffer.from(icon) }),
-    ]);
-    expect(tables.named_icons).toEqual([
-      expect.objectContaining({ kind: 'BOSS', key: 'Zulrah', png: Buffer.from(icon) }),
-    ]);
-
-    // Into an empty data folder.
-    const b = { dataDir: join(dir(), 'data') };
-    const result = restoreBackup({
-      file,
-      dataDir: b.dataDir,
-      backupDir: join(b.dataDir, 'backups'),
-      now: NOW,
-    });
-    expect(result).toMatchObject({
-      backupCreatedAt: NOW(),
-      migrationsApplied: 0,
-      previousSavedTo: null,
-    });
-    expect(dumpFile(result.dbFile)).toEqual(atBackup);
-
-    // A rebuild of both gives the same tables again.
-    const restored = open(result.dbFile);
-    const rebuildNow = () => new Date('2026-11-14T13:00:00.000Z');
-    rebuildDerivedTables(live.db, { now: rebuildNow });
-    rebuildDerivedTables(restored.db, { now: rebuildNow });
-    expect(dumpTables(restored.sqlite)).toEqual(dumpTables(live.sqlite));
-    expect((dumpTables(restored.sqlite).tables as Record<string, unknown[]>).item_icons).toEqual(
-      tables.item_icons,
-    );
-  });
-
-  it('replaces the current database and keeps a copy of it, WAL included', () => {
-    const a = instance();
-    const file = backup(a.dbFile, a.backupDir);
-    const atBackup = dumpFile(file);
+    const file = await backup(a.dbFile, a.backupDir);
+    const atBackup = withBackup(file, dumpTables);
 
     // Like the manual test: a key created after the backup, still only in the WAL.
     const live = openDatabase(a.dbFile);
@@ -167,7 +186,7 @@ describe('restore', () => {
     live.close();
     copyFileSync(`${a.dbFile}-wal.saved`, `${a.dbFile}-wal`);
 
-    const result = restoreBackup({
+    const result = await restoreBackup({
       file,
       dataDir: a.dataDir,
       backupDir: a.backupDir,
@@ -188,15 +207,68 @@ describe('restore', () => {
       previous.close();
     }
     // No temp files left, and the copy is not a backup that retention would delete.
-    expect(readdirSync(a.dataDir).filter((name) => name.includes('restore-tmp'))).toEqual([]);
+    expect(readdirSync(a.dataDir).filter((name) => name.includes('-tmp'))).toEqual([]);
   });
 
-  it('migrates a backup from an older version', () => {
+  it('still restores an uncompressed backup from before compression', async () => {
     const a = instance();
-    const file = backup(a.dbFile, a.backupDir);
+    const file = await plainBackup(a.dbFile, a.backupDir);
+    expect(basename(file)).toBe(`${N}-20261114-120000Z.db`);
+    const atBackup = dumpFile(file);
+    const gunzip = vi.spyOn(gzip, 'gunzipFile');
+    try {
+      const result = await restoreBackup({ file, dataDir: a.dataDir, backupDir: a.backupDir });
+      expect(result.backupCreatedAt).toEqual(NOW());
+      expect(gunzip).not.toHaveBeenCalled();
+    } finally {
+      gunzip.mockRestore();
+    }
+    expect(dumpFile(a.dbFile)).toEqual(atBackup);
+  });
+
+  it('decompresses into DATA_DIR and deletes that copy before the pre-restore copy', async () => {
+    const a = instance();
+    const file = await backup(a.dbFile, a.backupDir);
+    const targets: string[] = [];
+    const realGunzip = gzip.gunzipFile;
+    const gunzip = vi.spyOn(gzip, 'gunzipFile').mockImplementation((source, target) => {
+      targets.push(target);
+      return realGunzip(source, target);
+    });
+    // Whether the decompressed file still existed when each copy was written.
+    const seen: { target: string; unzippedThere: boolean }[] = [];
+    const realVacuum = backupModule.vacuumInto;
+    const vacuum = vi.spyOn(backupModule, 'vacuumInto').mockImplementation((sqlite, target) => {
+      seen.push({ target: basename(target), unzippedThere: targets.some((t) => existsSync(t)) });
+      realVacuum(sqlite, target);
+    });
+    try {
+      await restoreBackup({
+        file,
+        dataDir: a.dataDir,
+        backupDir: a.backupDir,
+        now: () => new Date('2026-11-14T12:30:00.000Z'),
+      });
+    } finally {
+      gunzip.mockRestore();
+      vacuum.mockRestore();
+    }
+    expect(targets).toHaveLength(1);
+    // Directly in DATA_DIR, next to the database.
+    expect(targets[0]).toBe(join(a.dataDir, basename(targets[0] ?? '')));
+    expect(seen).toEqual([
+      { target: `.${N}.db.restore-tmp`, unzippedThere: true },
+      { target: `${N}-pre-restore-20261114-123000Z.db`, unzippedThere: false },
+    ]);
+    expect(readdirSync(a.dataDir).filter((name) => name.includes('-tmp'))).toEqual([]);
+  });
+
+  it('migrates a backup from an older version', async () => {
+    const a = instance();
+    const file = await backup(a.dbFile, a.backupDir);
     const migrationsFolder = migrationsWithExtra(a.root);
 
-    const result = restoreBackup({
+    const result = await restoreBackup({
       file,
       dataDir: a.dataDir,
       backupDir: a.backupDir,
@@ -217,7 +289,7 @@ describe('restore', () => {
 
   describe('refuses, and changes nothing,', () => {
     /** Runs a restore that must fail, and checks that the database is untouched. */
-    function expectRefused(
+    async function expectRefused(
       a: ReturnType<typeof instance>,
       file: string,
       error: RegExp | (new (...args: never[]) => Error),
@@ -225,89 +297,105 @@ describe('restore', () => {
     ) {
       const before = readFileSync(a.dbFile);
       const backupsBefore = existsSync(a.backupDir) ? readdirSync(a.backupDir).sort() : [];
-      expect(() =>
+      await expect(
         restoreBackup({ file, dataDir: a.dataDir, backupDir: a.backupDir, ...extra }),
-      ).toThrow(error);
+      ).rejects.toThrow(error);
       expect(readFileSync(a.dbFile).equals(before)).toBe(true);
       expect(existsSync(a.backupDir) ? readdirSync(a.backupDir).sort() : []).toEqual(backupsBefore);
-      expect(readdirSync(a.dataDir).filter((name) => name.includes('restore-tmp'))).toEqual([]);
+      expect(readdirSync(a.dataDir).filter((name) => name.includes('-tmp'))).toEqual([]);
     }
 
-    it('while the server runs (lock held in this process)', () => {
+    it('while the server runs (lock held in this process)', async () => {
       const a = instance();
-      const file = backup(a.dbFile, a.backupDir);
+      const file = await backup(a.dbFile, a.backupDir);
       const lock = acquireInstanceLock(a.dataDir);
       cleanups.push(() => {
         lock.release();
       });
-      expectRefused(a, file, InstanceLockedError);
+      await expectRefused(a, file, InstanceLockedError);
     });
 
     it('while the server runs in another process', { timeout: 15_000 }, async () => {
       const a = instance();
-      const file = backup(a.dbFile, a.backupDir);
+      const file = await backup(a.dbFile, a.backupDir);
       const holder = await holdLockInChild(a.dataDir);
       cleanups.push(() => holder.kill('SIGKILL'));
-      expectRefused(a, file, InstanceLockedError);
+      await expectRefused(a, file, InstanceLockedError);
 
       // Once it has stopped (even killed), restore works.
       await new Promise((resolve) => {
         holder.once('exit', resolve);
         holder.kill('SIGKILL');
       });
-      expect(() =>
+      await expect(
         restoreBackup({ file, dataDir: a.dataDir, backupDir: a.backupDir }),
-      ).not.toThrow();
+      ).resolves.toBeDefined();
     });
 
     it.each([
       ['random bytes', () => Buffer.from(Array.from({ length: 65_536 }, (_, i) => (i * 31) % 251))],
       ['a text file', () => 'hello'],
-    ])('for a corrupt file (%s)', (_name, content) => {
+    ])('for a corrupt file (%s)', async (_name, content) => {
       const a = instance();
       const file = join(a.root, 'corrupt.db');
       writeFileSync(file, content());
-      expectRefused(a, file, RestoreError);
+      await expectRefused(a, file, RestoreError);
     });
 
-    it('for a truncated backup', () => {
+    it('for a truncated uncompressed backup', async () => {
       const a = instance();
-      const full = readFileSync(backup(a.dbFile, a.backupDir));
+      const full = readFileSync(await plainBackup(a.dbFile, a.backupDir));
       const file = join(a.root, 'truncated.db');
       writeFileSync(file, full.subarray(0, Math.floor(full.length / 2)));
-      expectRefused(a, file, /Nothing was changed/);
+      await expectRefused(a, file, /Nothing was changed/);
     });
 
-    it('for a backup with damaged pages', () => {
+    it('for a truncated gzipped backup, as an interrupted copy leaves it', async () => {
       const a = instance();
-      const damaged = Buffer.from(readFileSync(backup(a.dbFile, a.backupDir)));
+      const full = readFileSync(await backup(a.dbFile, a.backupDir));
+      const file = join(a.root, `${N}-20261114-120000Z.db.gz`);
+      writeFileSync(file, full.subarray(0, Math.floor(full.length / 2)));
+      await expectRefused(a, file, /Nothing was changed. Can't decompress/);
+    });
+
+    it('for a gzipped file that is not a database, naming the file', async () => {
+      const a = instance();
+      const { gzipSync } = await import('node:zlib');
+      const file = join(a.root, 'notes.db.gz');
+      writeFileSync(file, gzipSync('hello'));
+      await expectRefused(a, file, new RegExp(`${file} \\(decompressed\\) is not an SQLite`));
+    });
+
+    it('for a backup with damaged pages', async () => {
+      const a = instance();
+      const damaged = Buffer.from(readFileSync(await plainBackup(a.dbFile, a.backupDir)));
       // Overwrite a stretch in the middle (keeps the header and page 1).
       damaged.fill(0x5a, Math.floor(damaged.length / 2), Math.floor(damaged.length / 2) + 8192);
       const file = join(a.root, 'damaged.db');
       writeFileSync(file, damaged);
-      expectRefused(a, file, /Nothing was changed/);
+      await expectRefused(a, file, /Nothing was changed/);
     });
 
-    it('for a backup from a newer version', () => {
+    it('for a backup from a newer version', async () => {
       const a = instance();
       // A database made by a version with one more migration.
       const newer = join(a.root, 'newer.db');
-      copyFileSync(backup(a.dbFile, a.backupDir), newer);
+      copyFileSync(await plainBackup(a.dbFile, a.backupDir), newer);
       openDatabase(newer, { migrationsFolder: migrationsWithExtra(a.root) }).close();
-      expectRefused(a, newer, /newer version/);
+      await expectRefused(a, newer, /newer version/);
     });
 
-    it('for a file that is not there, or is the database itself', () => {
+    it('for a file that is not there, or is the database itself', async () => {
       const a = instance();
-      expectRefused(a, join(a.root, 'missing.db'), /No backup file/);
-      expectRefused(a, a.dbFile, /is the current database/);
+      await expectRefused(a, join(a.root, 'missing.db'), /No backup file/);
+      await expectRefused(a, a.dbFile, /is the current database/);
     });
   });
 
-  it('holds the lock while it runs and releases it after', () => {
+  it('holds the lock while it runs and releases it after', async () => {
     const a = instance();
-    const file = backup(a.dbFile, a.backupDir);
-    restoreBackup({ file, dataDir: a.dataDir, backupDir: a.backupDir });
+    const file = await backup(a.dbFile, a.backupDir);
+    await restoreBackup({ file, dataDir: a.dataDir, backupDir: a.backupDir });
     expect(existsSync(lockPath(a.dataDir))).toBe(true);
     // Released: a server can start.
     acquireInstanceLock(a.dataDir).release();

@@ -2,6 +2,7 @@ import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { backupStatusResponseSchema, BRANDING } from '@fireside/shared';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import * as backupModule from '../backup/backup.js';
 import { backupFileName, preMigrateFileName } from '../backup/files.js';
 import { tempDir } from '../backup/testing.js';
 import { loadConfig, type BackupConfig } from '../config.js';
@@ -93,15 +94,16 @@ describe('backup job', () => {
   const status = (s: ReturnType<typeof setup>, job?: ReturnType<typeof start>) =>
     backupStatusResponseSchema.parse(backupStatus(s.config.backup, OSLO, job?.state()));
 
-  it('backs up at start when there is no backup, then daily at BACKUP_TIME', () => {
+  it('backs up at start when there is no backup, then daily at BACKUP_TIME', async () => {
     vi.useFakeTimers();
     const s = setup();
     const clock = { now: new Date('2026-11-14T12:00:00.000Z') };
     const job = start(s, clock);
+    await job.idle();
     expect(status(s, job)).toMatchObject({
       enabled: true,
       count: 1,
-      latest: { fileName: `${N}-20261114-120000Z.db` },
+      latest: { fileName: `${N}-20261114-120000Z.db.gz` },
       nextRunAt: '2026-11-15T03:00:00.000Z',
       lastError: null,
     });
@@ -120,35 +122,40 @@ describe('backup job', () => {
     // The laptop slept past 04:00: the next check takes the backup.
     clock.now = new Date('2026-11-15T07:13:00.000Z');
     vi.advanceTimersByTime(60_000);
+    await job.idle();
     expect(status(s, job)).toMatchObject({
       count: 2,
-      latest: { fileName: `${N}-20261115-071300Z.db` },
+      latest: { fileName: `${N}-20261115-071300Z.db.gz` },
       nextRunAt: '2026-11-16T03:00:00.000Z',
     });
     vi.advanceTimersByTime(60_000);
     expect(status(s, job).count).toBe(2);
   });
 
-  it('skips the startup backup when the newest one is less than 24 hours old', () => {
+  it('skips the startup backup when the newest one is less than 24 hours old', async () => {
     const s = setup();
     mkdirSync(s.config.backup.dir, { recursive: true });
     const recent = backupFileName(at('2026-11-13T13:00:00Z'));
     writeFileSync(join(s.config.backup.dir, recent), 'x');
-    start(s, { now: new Date('2026-11-14T12:00:00.000Z') });
+    await start(s, { now: new Date('2026-11-14T12:00:00.000Z') }).idle();
     expect(status(s).latest?.fileName).toBe(recent);
 
     // A day and a bit later it is taken.
-    start(s, { now: new Date('2026-11-14T13:00:01.000Z') });
-    expect(status(s)).toMatchObject({ count: 2, latest: { fileName: `${N}-20261114-130001Z.db` } });
+    await start(s, { now: new Date('2026-11-14T13:00:01.000Z') }).idle();
+    expect(status(s)).toMatchObject({
+      count: 2,
+      latest: { fileName: `${N}-20261114-130001Z.db.gz` },
+    });
   });
 
-  it('keeps the last error until a backup succeeds', () => {
+  it('keeps the last error until a backup succeeds', async () => {
     vi.useFakeTimers();
     const s = setup();
     // A file where the folder should be: every backup fails.
     writeFileSync(s.config.backup.dir, 'not a folder');
     const clock = { now: new Date('2026-11-14T12:00:00.000Z') };
     const job = start(s, clock);
+    await job.idle();
     expect(status(s, job).lastError).toMatchObject({ at: '2026-11-14T12:00:00.000Z' });
     expect(status(s, job).lastError?.message).toMatch(/EEXIST|ENOTDIR/);
     expect(s.logs.at(-1)).toMatchObject({ level: 'error', msg: 'Backup failed' });
@@ -157,7 +164,44 @@ describe('backup job', () => {
     rmSync(s.config.backup.dir);
     clock.now = new Date('2026-11-15T03:00:00.000Z');
     vi.advanceTimersByTime(60_000);
+    await job.idle();
     expect(status(s, job)).toMatchObject({ count: 1, lastError: null });
+  });
+
+  it('never runs two backups at once: a tick meanwhile waits for the next minute', async () => {
+    vi.useFakeTimers();
+    const s = setup();
+    const real = backupModule.createBackup;
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const calls: string[] = [];
+    const slow = vi.spyOn(backupModule, 'createBackup').mockImplementation(async (options) => {
+      calls.push((options.now ?? (() => new Date()))().toISOString());
+      // The startup backup takes long (compressing a large database).
+      if (calls.length === 1) await gate;
+      return real(options);
+    });
+    cleanups.push(() => {
+      slow.mockRestore();
+    });
+    const clock = { now: new Date('2026-11-15T02:58:00.000Z') };
+    const job = start(s, clock);
+
+    // 04:00 Oslo passes while the startup backup is still running.
+    clock.now = new Date('2026-11-15T03:00:30.000Z');
+    vi.advanceTimersByTime(60_000);
+    expect(calls).toHaveLength(1);
+
+    release();
+    await job.idle();
+    // The next check takes the scheduled backup.
+    clock.now = new Date('2026-11-15T03:01:30.000Z');
+    vi.advanceTimersByTime(60_000);
+    await job.idle();
+    expect(calls).toEqual(['2026-11-15T02:58:00.000Z', '2026-11-15T03:01:30.000Z']);
+    expect(status(s, job).nextRunAt).toBe('2026-11-16T03:00:00.000Z');
   });
 
   it('reports an unreadable backup folder instead of failing', () => {
@@ -209,11 +253,12 @@ describe('backup job', () => {
     });
   });
 
-  it('stops', () => {
+  it('stops', async () => {
     vi.useFakeTimers();
     const s = setup();
     const clock = { now: new Date('2026-11-14T12:00:00.000Z') };
     const job = start(s, clock);
+    await job.idle();
     job.stop();
     clock.now = new Date('2026-11-16T12:00:00.000Z');
     vi.advanceTimersByTime(10 * 60_000);

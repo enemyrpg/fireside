@@ -6,21 +6,32 @@ import { countPendingMigrations, databasePath, MIGRATIONS_DIR, openDatabase } fr
 import { ensurePrivateDir, makePrivateFile } from '../fs-modes.js';
 import { errorMessage, openCheckedDatabase, vacuumInto } from './backup.js';
 import { fsyncPath, markWrittenThisRun, parseBackupFileName, preRestoreFileName } from './files.js';
+import { gunzipFile, isGzipFile } from './gzip.js';
 import { acquireInstanceLock } from './lock.js';
 import { tightenDataDir } from '../tighten-data-dir.js';
 
 // `pnpm cli restore <file>`. Only while no server uses DATA_DIR (see lock.ts).
 //
 // 1. Take the instance lock, so a server can't start halfway through.
-// 2. Check the backup (integrity, tables, schema not newer than this server).
+// 2. A gzipped backup (by its first bytes, whatever its name) is decompressed
+//    into a temp file in DATA_DIR. Never the OS temp folder: in Docker that is
+//    a RAM-backed tmpfs. Backups from before compression are used as they are.
+// 3. Check the backup (integrity, tables, schema not newer than this server).
 //    The backup file is opened read-only and never changed.
-// 3. Copy it next to the database with `VACUUM INTO` and run any pending
-//    migrations on the copy (a backup from an older version).
-// 4. Keep the current database: `VACUUM INTO` a pre-restore copy in
+// 4. Copy it next to the database with `VACUUM INTO`, delete the decompressed
+//    temp right away (it is no longer needed, and the disk then never holds
+//    more than three copies at once), and run any pending migrations on the
+//    copy (a backup from an older version).
+// 5. Keep the current database: `VACUUM INTO` a pre-restore copy in
 //    BACKUP_DIR (includes what is still in its `-wal`).
-// 5. Delete the current `-wal`/`-shm` (an old WAL applied to the new file
+// 6. Delete the current `-wal`/`-shm` (an old WAL applied to the new file
 //    would corrupt it) and rename the copy into place.
-// Until step 5 the current database is untouched.
+// Until step 6 the current database is untouched.
+//
+// Disk use (DATA_DIR and BACKUP_DIR are usually on the same disk): besides
+// the backup itself, at most three database-sized files at once. During
+// step 4 the current database, the decompressed backup and the copy; during
+// step 5 the current database, the copy and the pre-restore copy.
 
 export interface RestoreOptions {
   /** The backup to restore (absolute path). */
@@ -56,13 +67,13 @@ function removeWithSideFiles(path: string): void {
   for (const suffix of ['', ...SIDE_FILES]) rmSync(path + suffix, { force: true });
 }
 
-export function restoreBackup({
+export async function restoreBackup({
   file,
   dataDir,
   backupDir,
   now = systemClock,
   migrationsFolder = MIGRATIONS_DIR,
-}: RestoreOptions): RestoreResult {
+}: RestoreOptions): Promise<RestoreResult> {
   const dbFile = databasePath(dataDir);
   if (!existsSync(file) || !statSync(file).isFile()) {
     throw new RestoreError(`No backup file at ${file}`);
@@ -77,12 +88,23 @@ export function restoreBackup({
     // already in them are for this user only. Best effort; the server reports
     // what it can't change when it starts.
     tightenDataDir({ dataDir, backupDir });
-    // 2–3: check the backup and copy it into DATA_DIR.
+    // 2–4: decompress, check the backup and copy it into DATA_DIR.
     const temp = join(dataDir, `.${basename(dbFile)}.restore-tmp`);
+    const unzipped = join(dataDir, `.${basename(dbFile)}.restore-gunzip-tmp`);
     removeWithSideFiles(temp);
+    removeWithSideFiles(unzipped);
     let migrationsApplied: number;
     try {
-      const backup = openCheckedDatabase(file);
+      let source = file;
+      if (isGzipFile(file)) {
+        try {
+          await gunzipFile(file, unzipped);
+        } catch (error) {
+          throw new Error(`Can't decompress ${file}: ${errorMessage(error)}`, { cause: error });
+        }
+        source = unzipped;
+      }
+      const backup = openCheckedDatabase(source);
       try {
         // Throws UnknownMigrationError for a backup from a newer version.
         migrationsApplied = countPendingMigrations(backup, migrationsFolder);
@@ -90,6 +112,8 @@ export function restoreBackup({
       } finally {
         backup.close();
       }
+      // Not needed any more: free its space before the pre-restore copy is written.
+      removeWithSideFiles(unzipped);
       // Applies pending migrations, then closes cleanly (no -wal left).
       openDatabase(temp, { migrationsFolder }).close();
       for (const suffix of SIDE_FILES) {
@@ -100,10 +124,13 @@ export function restoreBackup({
       fsyncPath(temp);
     } catch (error) {
       removeWithSideFiles(temp);
-      throw new RestoreError(`Nothing was changed. ${errorMessage(error)}`);
+      removeWithSideFiles(unzipped);
+      // Name the backup, not the temp file it was decompressed into.
+      const message = errorMessage(error).replaceAll(unzipped, `${file} (decompressed)`);
+      throw new RestoreError(`Nothing was changed. ${message}`);
     }
 
-    // 4: keep the current database.
+    // 5: keep the current database.
     let previousSavedTo: string | null = null;
     let previousRawCopy = false;
     if (existsSync(dbFile)) {
@@ -122,7 +149,7 @@ export function restoreBackup({
       }
     }
 
-    // 5: swap. The old -wal must go before the new file is in place.
+    // 6: swap. The old -wal must go before the new file is in place.
     for (const suffix of SIDE_FILES) rmSync(dbFile + suffix, { force: true });
     renameSync(temp, dbFile);
     fsyncPath(dirname(dbFile));

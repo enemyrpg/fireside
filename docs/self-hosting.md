@@ -561,7 +561,12 @@ While the server runs, it backs up the database every day at `BACKUP_TIME`
 `PRAGMA integrity_check` before it counts. **Settings → Server** shows the
 last backup, how many are kept, and the last error if one failed.
 
-Backups are named `fireside-<YYYYMMDD>-<HHMMSS>Z.db` (UTC) in `BACKUP_DIR`.
+Backups are gzipped and named `fireside-<YYYYMMDD>-<HHMMSS>Z.db.gz` (UTC) in
+`BACKUP_DIR`, usually a quarter to a fifth of the database's size. Backups from
+before compression (`fireside-<…>Z.db`) still count, age out the same way and
+restore as before. While a backup is written it has a temporary name
+(`.fireside-backup-….tmp`): a backup that is interrupted (a crash, a full disk)
+never counts, and its temporary files are removed an hour later.
 
 **Which ones are kept.** The newest backup of each of the last 7 days, 4 ISO
 weeks and 6 months (`BACKUP_KEEP_*`), in `TZ`. The newest backup is always
@@ -578,10 +583,52 @@ server has been stopped for a while, old files go that much later. With every
 `BACKUP_KEEP_*` at 0 only the newest backup is kept.
 
 ```fish
-pnpm cli backup                                  # back up now (safe while the server runs)
-pnpm cli restore data/backups/fireside-20261114-030000Z.db
-pnpm cli restore fireside-20261114-030000Z.db    # a bare name is looked up in BACKUP_DIR
+pnpm cli backup                                     # back up now (safe while the server runs)
+pnpm cli restore data/backups/fireside-20261114-030000Z.db.gz
+pnpm cli restore fireside-20261114-030000Z.db.gz    # a bare name is looked up in BACKUP_DIR
+pnpm cli restore fireside-20261001-030000Z.db       # an older, uncompressed backup
 ```
+
+A bare name without `.gz` finds the compressed backup too, so
+`pnpm cli restore fireside-20261114-030000Z.db` also works.
+
+**Opening a backup by hand.** A backup is an ordinary SQLite database in gzip.
+Copy it out of `BACKUP_DIR`, unpack it with `-k` (keeps the `.gz`) and open
+the copy read-only:
+
+```fish
+mkdir -p ~/fireside-inspect
+cp data/backups/fireside-20261114-030000Z.db.gz ~/fireside-inspect/
+gunzip -k ~/fireside-inspect/fireside-20261114-030000Z.db.gz
+sqlite3 -readonly ~/fireside-inspect/fireside-20261114-030000Z.db
+```
+
+Don't unpack inside `BACKUP_DIR`: there the unpacked file has a backup's name,
+and retention deletes it after the next backup (the `.gz` is kept). Delete the
+copy when you are done; it holds everything the database does.
+
+### Disk space
+
+`DATA_DIR` and `BACKUP_DIR` are usually on the same disk (in Docker,
+`data/backups` is inside `data`), so count them together.
+
+- **During a backup**, the database is first copied uncompressed and then
+  gzipped, and both exist for a moment: you need free space for about the
+  size of the database plus its compressed copy (about 1.1–1.3 times the
+  database). Afterwards only the compressed backup is left.
+- **During a restore**, up to three database-sized files exist at once, next
+  to the backup itself: the current database, the unpacked backup and the
+  copy that becomes the new database; then the current database, that copy
+  and the pre-restore copy of the current database. That is about three times
+  the database's size in all, plus the compressed backup. All of it is
+  written in `DATA_DIR` and `BACKUP_DIR`, never in `/tmp` (a RAM-backed tmpfs
+  in Docker).
+
+> [!TIP]
+> On a small disk, check the free space before you restore (`df -h` on the
+> folder that holds `DATA_DIR`). A restore that runs out of space changes
+> nothing, but it is quicker to free space first, for example by moving old
+> backups or `fireside-pre-*` copies elsewhere.
 
 ### Restore
 
@@ -593,7 +640,8 @@ Restore replaces the database with a backup:
 2. Run `pnpm cli restore <file>`. In Docker:
    `docker compose run --rm fireside fireside restore <file>` (backups are
    in `/data/backups` in the container, so the file name is enough). It
-   checks the backup first and changes nothing if the file is damaged or
+   takes a compressed `.db.gz` backup or an older uncompressed `.db` one. It
+   unpacks a compressed backup into `DATA_DIR` and checks it first and changes nothing if the file is damaged or
    comes from a newer Fireside version (upgrade first). A backup from an
    older version is migrated. The current database is kept as
    `fireside-pre-restore-<time>.db` in `BACKUP_DIR`, until it ages out like
@@ -612,11 +660,13 @@ If the restored database has users with 2FA, `fireside.key` must be in
 - **Copy it regularly**, e.g. with a daily `rsync` or your normal backup
   tool. The backups and their folder are readable only by the user the
   server runs as (`0600` in a `0700` folder), so run the copy as that user.
-  In Docker that is `FIRESIDE_UID`. For example, as a daily user timer or
-  cron job:
+  In Docker that is `FIRESIDE_UID`. Leave out the temporary files of a backup
+  that is being written (`.fireside-backup-*`). The backups are already
+  compressed, so compressing them again in transit (`rsync -z`) gains
+  little. For example, as a daily user timer or cron job:
 
   ```sh
-  rsync -a --delete ~/fireside/data/backups/ /mnt/backup-disk/fireside/
+  rsync -a --delete --exclude '.fireside-backup-*' ~/fireside/data/backups/ /mnt/backup-disk/fireside/
   ```
 
 - **Or put `BACKUP_DIR` on another disk.** Without Docker, set `BACKUP_DIR`
@@ -667,7 +717,7 @@ plugin retries anything it sends meanwhile.
 1. **On the old machine, take a fresh backup** while the server runs:
    `pnpm cli backup` (Docker: `docker compose exec fireside fireside backup`).
 2. **Stop the server** (and the tunnel, if you use one).
-3. **Copy to the new machine:** that backup, `fireside.key` from `DATA_DIR`
+3. **Copy to the new machine:** that backup (`fireside-….db.gz`), `fireside.key` from `DATA_DIR`
    (if anyone uses 2FA), `.env` and, with the tunnel, `secrets/tunnel-token`.
    Keep them `0600` and owned by the user that runs Fireside there.
 4. **On the new machine:** install Fireside as above, put `fireside.key` in

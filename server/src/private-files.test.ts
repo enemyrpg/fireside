@@ -77,9 +77,9 @@ describe.skipIf(process.platform === 'win32')('private files', () => {
   };
 
   describe('the functions that create files', () => {
-    it('a backup is 600 in a 700 folder, also from a loose database', () => {
+    it('a backup is 600 in a 700 folder, also from a loose database', async () => {
       const dbFile = looseDatabase();
-      const result = createBackup({ dbFile, dir: backupDir, keep: KEEP, timeZone: 'UTC' });
+      const result = await createBackup({ dbFile, dir: backupDir, keep: KEEP, timeZone: 'UTC' });
       expect(mode(result.path)).toBe('600');
       expect(mode(backupDir)).toBe('700');
     });
@@ -96,15 +96,15 @@ describe.skipIf(process.platform === 'win32')('private files', () => {
       expect(mode(backupDir)).toBe('700');
     });
 
-    it('a restored database and the copy of the one it replaced are 600', () => {
+    it('a restored database and the copy of the one it replaced are 600', async () => {
       const dbFile = looseDatabase();
-      const backup = createBackup({ dbFile, dir: backupDir, keep: KEEP, timeZone: 'UTC' });
+      const backup = await createBackup({ dbFile, dir: backupDir, keep: KEEP, timeZone: 'UTC' });
       // As a backup taken before this change, or copied in by hand.
       chmodSync(backup.path, 0o644);
       chmodSync(backupDir, 0o755);
       chmodSync(dbFile, 0o644);
 
-      const result = restoreBackup({ file: backup.path, dataDir, backupDir });
+      const result = await restoreBackup({ file: backup.path, dataDir, backupDir });
       expect(mode(result.dbFile)).toBe('600');
       expect(result.previousSavedTo).not.toBeNull();
       expect(mode(result.previousSavedTo ?? '')).toBe('600');
@@ -112,13 +112,13 @@ describe.skipIf(process.platform === 'win32')('private files', () => {
       expect(mode(dataDir)).toBe('700');
     });
 
-    it('a raw copy of a damaged database is 600 too', () => {
+    it('a raw copy of a damaged database is 600 too', async () => {
       const dbFile = looseDatabase();
-      const backup = createBackup({ dbFile, dir: backupDir, keep: KEEP, timeZone: 'UTC' });
+      const backup = await createBackup({ dbFile, dir: backupDir, keep: KEEP, timeZone: 'UTC' });
       // Not a database any more: `restore` keeps the raw file.
       // A file full of junk under the database's name, readable by all.
       writeJunk(dbFile, Buffer.alloc(8192, 0x5a));
-      const result = restoreBackup({ file: backup.path, dataDir, backupDir });
+      const result = await restoreBackup({ file: backup.path, dataDir, backupDir });
       expect(result.previousRawCopy).toBe(true);
       expect(mode(result.previousSavedTo ?? '')).toBe('600');
       expect(mode(result.dbFile)).toBe('600');
@@ -263,9 +263,9 @@ describe.skipIf(process.platform === 'win32')('private files', () => {
       { timeout: 60_000 },
       async () => {
         const dbFile = looseDatabase();
-        const old = createBackup({ dbFile, dir: backupDir, keep: KEEP, timeZone: 'UTC' });
+        const old = await createBackup({ dbFile, dir: backupDir, keep: KEEP, timeZone: 'UTC' });
         // Old enough that the server takes its own startup backup.
-        const aged = join(backupDir, `${N}-20260101-030000Z.db`);
+        const aged = join(backupDir, `${N}-20260101-030000Z.db.gz`);
         renameSync(old.path, aged);
         for (const path of [dbFile, aged]) chmodSync(path, 0o644);
         for (const path of [dataDir, backupDir]) chmodSync(path, 0o755);
@@ -277,7 +277,7 @@ describe.skipIf(process.platform === 'win32')('private files', () => {
           const expected = name === 'DATA_DIR' || name === 'BACKUP_DIR' ? '700' : '600';
           expect({ name, mode: value }).toEqual({ name, mode: expected });
         }
-        expect(running[`backups/${N}-20260101-030000Z.db`]).toBe('600');
+        expect(running[`backups/${N}-20260101-030000Z.db.gz`]).toBe('600');
         // The two folders, the database and the old backup.
         const line = logLine(log, 'File permissions');
         expect(line?.tightened).toBeGreaterThanOrEqual(4);
