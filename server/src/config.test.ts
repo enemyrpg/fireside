@@ -244,6 +244,29 @@ describe('loadConfig', () => {
     },
   );
 
+  it('accepts exactly the USER_AGENT_CONTACT characters the old range-based pattern did', () => {
+    // The old pattern was /^[!#-'*-[\]-~]+$/: 0x21, 0x23–0x27, 0x2a–0x5b and
+    // 0x5d–0x7e. Kept as code points, so this file does not repeat its ranges.
+    const oldAccepts = (code: number) =>
+      code === 0x21 ||
+      (code >= 0x23 && code <= 0x27) ||
+      (code >= 0x2a && code <= 0x5b) ||
+      (code >= 0x5d && code <= 0x7e);
+    const accepts = (value: string) => {
+      try {
+        loadConfig({ USER_AGENT_CONTACT: value });
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    for (let code = 0; code <= 0x7f; code++) {
+      // Between two letters: a value of only whitespace counts as unset.
+      expect([code, accepts(`x${String.fromCharCode(code)}x`)]).toEqual([code, oldAccepts(code)]);
+    }
+    for (const value of ['xéx', 'x€x', 'x😀x']) expect(accepts(value)).toBe(false);
+  });
+
   it('lists every invalid variable in one error', () => {
     try {
       loadConfig({ PORT: 'abc', TZ: 'Mars/Base' });
