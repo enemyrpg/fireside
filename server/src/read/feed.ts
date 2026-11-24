@@ -474,25 +474,31 @@ export function feed(db: Queryable, options: FeedOptions): FeedResponse {
     return compareFeedEntries({ at, type: typeOfRank(rank), id }, entry) < 0;
   };
 
-  // A Map, not an object: the query schema already limits `types`, but a
-  // lookup here can never reach an inherited property such as `constructor`.
-  const sources = new Map<FeedType, () => Source>([
-    ['session', () => sessionSource(db, accountIds)],
-    ['level', () => levelSource(db, accountIds)],
-    ['clog', () => clogSource(db, accountIds)],
-    ['pet', () => petSource(db, accountIds)],
-    ['drop', () => dropSource(db, accountIds, options.minValue, types.includes('clog'))],
-  ]);
+  const sourceFor = (type: FeedType): Source => {
+    switch (type) {
+      case 'session':
+        return sessionSource(db, accountIds);
+      case 'level':
+        return levelSource(db, accountIds);
+      case 'clog':
+        return clogSource(db, accountIds);
+      case 'pet':
+        return petSource(db, accountIds);
+      case 'drop':
+        return dropSource(db, accountIds, options.minValue, types.includes('clog'));
+      default: {
+        // A new FeedType without a case fails typecheck here.
+        const unknown: never = type;
+        throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid request', [
+          { path: 'query.types', message: `Unknown feed type: ${String(unknown)}` },
+        ]);
+      }
+    }
+  };
 
   const candidates: FeedEntry[] = [];
   for (const type of types) {
-    const makeSource = sources.get(type);
-    if (makeSource === undefined) {
-      throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid request', [
-        { path: 'query.types', message: `Unknown feed type: ${type}` },
-      ]);
-    }
-    const source = makeSource();
+    const source = sourceFor(type);
     const before = cursor?.[0];
     if (before !== undefined) candidates.push(...source.at(before).filter(after));
     let rows = source.before(before, limit + 1);
