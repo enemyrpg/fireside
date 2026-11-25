@@ -143,12 +143,19 @@ which is CC BY-NC-SA 3.0 with its own LICENSE file.
   because a migration that is regenerated later leaves those databases unusable.
 - Only stop processes you started yourself, by the PID you recorded when
   starting them. Never use `pkill`, `killall`, `pgrep`-based kills or any match
-  on process names or command lines. Never stop, restart or otherwise touch a
+  on process names or command lines, not even to find a PID. A scratch server
+  started through `scripts/lib/scratch-server.ts` records its PID in
+  `<data-dir>/scratch-server.pid` while it runs: if the script that started it
+  crashes, stop the server by that PID, then delete the file (it is only
+  removed by itself while the script runs). If there is no recorded PID, ask. Never stop, restart or otherwise touch a
   running production instance (its container or service) or anything on its port.
 - Scratch, seed and test servers never read the real `.env`, and always run
   with `PRICES_ENABLED=false`, `RUNEPROFILE_ENABLED=false`, an empty
   `USER_AGENT_CONTACT` and an empty `TRUSTED_PROXY`, so they make no external
   calls. The server, `pnpm cli` and `pnpm seed` load `.env` from the repo root
   (variables already set win), so run them from a checkout without `.env`
-  (e.g. a git worktree) and set those variables, and check the log for
-  "External request".
+  (e.g. a git worktree) and set those variables. External requests are logged
+  at `info` ("External request done"/"failed"). Scratch servers log at `info`
+  to `<data-dir>/server.log`, and the helper fails the run if that log holds an
+  external request. Any other server: keep `LOG_LEVEL` at `info` or lower and
+  check its log for "External request".

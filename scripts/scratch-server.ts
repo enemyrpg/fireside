@@ -6,7 +6,9 @@
 //
 // Seeds <data-dir> when it does not exist yet (the generator behind
 // `pnpm seed`), starts the built server on it, prints `ready <url> pid <pid>`
-// and runs until it gets SIGTERM or SIGINT, which stops the server too.
+// and runs until it gets SIGTERM or SIGINT, which stops the server too. The
+// server's own PID is in <data-dir>/scratch-server.pid and its log in
+// <data-dir>/server.log (lib/scratch-server.ts).
 
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';

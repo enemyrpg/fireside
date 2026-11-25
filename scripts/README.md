@@ -27,7 +27,11 @@ Tooling that is not part of the server or dashboard runtime.
 - `lib/scratch-server.ts` – how all of the above start a server. It never reads
   `.env`, has every external source off with no contact, its own data folder
   and a free port, and refuses to start (or stops the server) if an external
-  call would be possible.
+  call would be possible. The server's PID is in `<data-dir>/scratch-server.pid`
+  while it runs (stop a leftover server by that PID, then delete the file),
+  and its log, at `info`,
+  in `<data-dir>/server.log`. When the server exits, the run fails if the log
+  holds an external request.
 - `docker/`, `systemd/` – checks and units for self-hosting.
 
 Planned:

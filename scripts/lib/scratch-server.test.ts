@@ -1,6 +1,18 @@
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
-import { REPO_ROOT, activeSourceProblems, assertScratchEnv, scratchEnv } from './scratch-server.ts';
+import { afterEach, describe, expect, it } from 'vitest';
+import {
+  LOG_FILE,
+  PID_FILE,
+  REPO_ROOT,
+  activeSourceProblems,
+  assertScratchEnv,
+  externalRequestLines,
+  scratchEnv,
+  spawnRecorded,
+  stopServer,
+} from './scratch-server.ts';
 
 const DIR = '/tmp/scratch-test/db';
 
@@ -32,6 +44,10 @@ describe('scratchEnv', () => {
     expect(env.PORT).toBe('4010');
     expect(env.HOST).toBe('127.0.0.1');
     expect(env.SOMETHING_ELSE).toBeUndefined();
+  });
+
+  it('logs at info, where external requests are logged', () => {
+    expect(scratchEnv(DIR, 4010).LOG_LEVEL).toBe('info');
   });
 
   it('preloads the module that keeps .env from being read', () => {
@@ -114,5 +130,51 @@ describe('activeSourceProblems', () => {
         ],
       }),
     ).toEqual(['USER_AGENT_CONTACT is set', 'WIKI_PRICES is on', 'RUNEPROFILE is on']);
+  });
+});
+
+describe('externalRequestLines', () => {
+  it('finds external requests that worked or failed, and nothing else', () => {
+    const log = [
+      '{"level":30,"msg":"Server listening"}',
+      '{"level":30,"source":"WIKI_PRICES","msg":"External request done"}',
+      '{"level":40,"source":"RUNEPROFILE","msg":"External request failed"}',
+      '',
+    ].join('\n');
+    expect(externalRequestLines(log)).toEqual([
+      '{"level":30,"source":"WIKI_PRICES","msg":"External request done"}',
+      '{"level":40,"source":"RUNEPROFILE","msg":"External request failed"}',
+    ]);
+    expect(externalRequestLines('{"msg":"Server listening"}\n')).toEqual([]);
+  });
+});
+
+describe('spawnRecorded', () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('records the PID at once, logs to the data folder, and removes the PID file on exit', async () => {
+    const dir = join(mkdtempSync(join(tmpdir(), 'scratch-pid-')), 'db');
+    dirs.push(join(dir, '..'));
+    // A stand-in for the server: logs one line, then waits to be stopped.
+    const child = spawnRecorded(dir, { PATH: process.env.PATH ?? '' }, [
+      '-e',
+      'console.log(JSON.stringify({ msg: "Server listening" })); setInterval(() => {}, 1000);',
+    ]);
+    expect(readFileSync(join(dir, PID_FILE), 'utf8')).toBe(`${String(child.pid)}\n`);
+    for (
+      let i = 0;
+      i < 100 && !readFileSync(join(dir, LOG_FILE), 'utf8').includes('listening');
+      i++
+    ) {
+      await new Promise((done) => setTimeout(done, 50));
+    }
+    expect(readFileSync(join(dir, LOG_FILE), 'utf8')).toContain('Server listening');
+
+    await stopServer(child);
+    expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
+    expect(existsSync(join(dir, PID_FILE))).toBe(false);
   });
 });
