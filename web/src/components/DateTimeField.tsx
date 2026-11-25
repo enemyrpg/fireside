@@ -1,12 +1,54 @@
 import { addDays } from '@fireside/shared';
 import { CalendarDays } from 'lucide-react';
-import { useId, useRef, useState } from 'react';
+import { Suspense, useEffect, useId, useRef, useState, type RefObject } from 'react';
 import { Button } from '@/components/ui/button';
-import { Calendar } from '@/components/ui/calendar';
 import { Input } from '@/components/ui/input';
+import { Skeleton } from '@/components/ui/skeleton';
+import { useDelayedFlag } from '@/hooks/useDelayedFlag';
+import { lazyNamed } from '@/lib/lazy';
+import { cn } from '@/lib/utils';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { formatLocalDateLong, parseLocalDate } from '@/format';
 import { calendarDate, dateKey, localDateOfCalendar } from '@/lib/time';
+
+// The date picker library is only needed here, so it loads on its own: as
+// soon as the field is shown, so it is there by the time the calendar opens.
+const { Component: Calendar, load: loadCalendar } = lazyNamed(
+  () => import('@/components/ui/calendar'),
+  'Calendar',
+);
+
+/** The chosen day's button in the open calendar, if there is one yet. */
+function chosenDay(popover: RefObject<HTMLDivElement | null>) {
+  return popover.current?.querySelector<HTMLElement>('[aria-selected="true"] button') ?? null;
+}
+
+/** The calendar's place while its code loads: 7 × 6 days of 36 px, the caption and day names. */
+function CalendarSkeleton() {
+  const shown = useDelayedFlag(true);
+  return (
+    <Skeleton
+      aria-busy="true"
+      aria-label="Loading"
+      className={cn('h-[292px] w-[252px]', !shown && 'invisible')}
+    />
+  );
+}
+
+/**
+ * Moves focus to the chosen day once a calendar that loaded after the popover
+ * opened is there, as `onOpenAutoFocus` does when it was there already.
+ */
+function FocusChosenDay({ popover }: { popover: RefObject<HTMLDivElement | null> }) {
+  useEffect(() => {
+    const content = popover.current;
+    if (!content) return;
+    const active = document.activeElement;
+    if (active !== null && active !== document.body && !content.contains(active)) return;
+    chosenDay(popover)?.focus();
+  }, [popover]);
+  return null;
+}
 
 export interface DateTimeFieldProps {
   /** Name of the pair, shown above it ("Date and time"). */
@@ -47,6 +89,10 @@ export function DateTimeField({
 }: DateTimeFieldProps) {
   const [open, setOpen] = useState(false);
   const popover = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    // A failed load shows up when the calendar opens.
+    loadCalendar().catch(() => undefined);
+  }, []);
   const id = useId();
   const labelId = `${id}-label`;
   const timeErrorId = `${id}-time-error`;
@@ -89,28 +135,29 @@ export function DateTimeField({
             // Start on the chosen day, so the arrow keys work at once. Radix
             // would otherwise focus the first button (the previous month).
             onOpenAutoFocus={(event) => {
-              const chosen = popover.current?.querySelector<HTMLElement>(
-                '[aria-selected="true"] button',
-              );
+              const chosen = chosenDay(popover);
               if (chosen) {
                 event.preventDefault();
                 chosen.focus();
               }
             }}
           >
-            <Calendar
-              mode="single"
-              required
-              selected={calendarDate(date)}
-              defaultMonth={calendarDate(date)}
-              today={calendarDate(today)}
-              startMonth={calendarDate(min)}
-              endMonth={calendarDate(today)}
-              disabled={{ before: calendarDate(min), after: calendarDate(today) }}
-              onSelect={(day) => {
-                choose(localDateOfCalendar(day));
-              }}
-            />
+            <Suspense fallback={<CalendarSkeleton />}>
+              <Calendar
+                mode="single"
+                required
+                selected={calendarDate(date)}
+                defaultMonth={calendarDate(date)}
+                today={calendarDate(today)}
+                startMonth={calendarDate(min)}
+                endMonth={calendarDate(today)}
+                disabled={{ before: calendarDate(min), after: calendarDate(today) }}
+                onSelect={(day) => {
+                  choose(localDateOfCalendar(day));
+                }}
+              />
+              <FocusChosenDay popover={popover} />
+            </Suspense>
             <div className="mt-2 flex gap-2 border-t border-border pt-3">
               <Button
                 type="button"

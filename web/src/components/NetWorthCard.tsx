@@ -2,7 +2,7 @@ import type { AccountScope } from '@fireside/shared';
 import { Link } from 'react-router';
 import { useBankHistory, useBankSummary } from '@/api/hooks';
 import { Card, CardHeader } from '@/components/Card';
-import { Sparkline } from '@/components/Sparkline';
+import { LazySparkline } from '@/components/LazySparkline';
 import { TooltipRow } from '@/components/TooltipRow';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { formatAxisDate, formatCompact, formatGp, formatGpExact } from '@/format';
@@ -79,7 +79,7 @@ export function NetWorthCard({ scope, live }: { scope: AccountScope; live: boole
         </span>
       </div>
       {points.length > 1 && first && last && (
-        <Sparkline
+        <LazySparkline
           variant="area"
           points={points}
           format={formatGpExact}

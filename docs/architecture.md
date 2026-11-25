@@ -56,6 +56,30 @@ The server and the dashboard both import the schemas from `shared/`, so the
 API has one definition. The dashboard only validates responses with Zod in
 development and tests; Zod is kept out of the production bundle.
 
+### The dashboard bundle
+
+The production build is split so the first screen loads only what it needs:
+
+- **First load:** the shell (menus, header, footer), Home, the login, invite
+  and About pages, and the error pages, plus a `vendor` file with React, React
+  Router and TanStack Query. The vendor file changes far less often than our
+  own code, so a returning browser usually keeps it across a release
+  (`build.rolldownOptions` in `web/vite.config.ts`).
+- **Every other page** is its own chunk, loaded when it is first opened
+  (`React.lazy` in `web/src/routing/page-components.ts`). A page behind a data
+  check (`PageGate`, e.g. Bank) starts loading its code at the same time as the
+  data it waits for.
+- **Libraries for one place** load on their own: the charts (recharts, also for
+  Home's net worth sparkline), the QR code for two-factor setup and the date
+  picker.
+
+All chunks are hashed files in `/assets`, served from the same origin and
+cached for a year; `index.html` is never cached. There is no service worker
+([ADR 0013](decisions/0013-no-service-worker.md)). After a release, a tab that
+was open before it asks for chunks that no longer exist: it then shows "A new
+version is available" with a Reload button instead of the page, and never
+reloads by itself ([design.md](design.md), "Loading").
+
 ## Users and ownership
 
 An instance has one or more users ([ADR 0010](decisions/0010-multi-user-invite-only.md)).

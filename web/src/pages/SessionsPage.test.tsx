@@ -12,7 +12,7 @@ import {
   type MockAnswer,
 } from '@/test/render-app';
 import { EMPTY_SUMMARY, json, makeDetail, makeSession as session } from '@/test/sessions';
-import { SESSION_NOT_FOUND } from './SessionPage';
+import { SESSION_NOT_FOUND } from './session/not-found';
 import { SESSIONS_EMPTY } from './SessionsPage';
 
 // Health says Europe/Oslo (UTC+1 in November). Accounts 1 ("Test Main") and 2 ("Alt").

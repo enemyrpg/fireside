@@ -11,12 +11,11 @@ import { sessionHref } from '@/lib/session-groups';
 import { hrefOf } from './registry';
 import { isMissingSession, sessionsListPath } from './session/links';
 import { SessionDetail } from './session/SessionDetail';
+import { SESSION_NOT_FOUND } from './session/not-found';
 
 // Session detail as its own screen, `/sessions/:id`. On mobile the screen; on
 // PC it redirects to the Sessions list with the session selected (`?session=`),
 // in the scope `sessionScope` gives.
-
-export const SESSION_NOT_FOUND = "This session doesn't exist.";
 
 function Screen({ detail }: { detail: SessionDetailResponse }) {
   const scope = sessionScope(detail.session.accountId, readLastAccount());

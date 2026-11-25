@@ -7,6 +7,10 @@ import { themeInitPlugin } from './src/theme/theme-init-plugin.ts';
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 
+/** A module of the libraries every page needs, in pnpm's layout or a flat one. */
+const VENDOR_MODULE =
+  /[\\/]node_modules[\\/](?:\.pnpm[\\/][^\\/]+[\\/]node_modules[\\/])?(?:react|react-dom|scheduler|react-router|@tanstack[\\/](?:react-query|query-core))[\\/]/;
+
 /**
  * Fails a production build that bundles Zod. Responses are only validated in
  * development and tests; a value import from a schema module in `shared/` would
@@ -47,6 +51,16 @@ export default defineConfig(({ mode }) => {
       // Never inline files as data: URIs (Vite inlines small fonts by default):
       // the CSP allows fonts from this origin only.
       assetsInlineLimit: 0,
+      rolldownOptions: {
+        output: {
+          codeSplitting: {
+            // React, React Router and TanStack Query change far less often than
+            // our own code, so they get their own file that stays cached across
+            // releases (docs/architecture.md, "The dashboard bundle").
+            groups: [{ name: 'vendor', test: VENDOR_MODULE }],
+          },
+        },
+      },
     },
     server: {
       // The dashboard only talks to our own server. In dev, Vite forwards /api to it.
