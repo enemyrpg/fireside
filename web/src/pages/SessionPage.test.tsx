@@ -7,7 +7,7 @@ import detailFixture from '../../../shared/fixtures/api/session-detail-response/
 import { LIVE_POLL_MS } from '@/api/query-client';
 import { mockApi, renderApp, stubDesktop } from '@/test/render-app';
 import { makeDetail, makeSession } from '@/test/sessions';
-import { SESSION_NOT_FOUND } from './SessionPage';
+import { SESSION_NOT_FOUND } from './session/not-found';
 
 // The fixture: account 1 ("Test Main"), Sun 8 Nov 19:00–21:00 Oslo, World 420,
 // with an older neighbour and no newer one.

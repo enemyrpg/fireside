@@ -30,7 +30,7 @@ import {
 import { cn } from '@/lib/utils';
 import { useAccountScope } from '@/routing/useAccountScope';
 import { hrefOf } from './registry';
-import { SESSION_NOT_FOUND } from './SessionPage';
+import { SESSION_NOT_FOUND } from './session/not-found';
 import { isMissingSession } from './session/links';
 import { SessionDetail } from './session/SessionDetail';
 

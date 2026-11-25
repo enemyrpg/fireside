@@ -1,21 +1,35 @@
+import { Suspense } from 'react';
 import type { RouteObject } from 'react-router';
+import { PageSkeleton } from '@/components/PageSkeleton';
 import { NotFoundPage, RouteErrorPage } from '@/pages/ErrorPages';
 import { DESTINATIONS, PAGES, type PageDef } from '@/pages/registry';
 import { AccountRoute, RootRedirect } from './AccountRoute';
 import type { DestinationHandle, PageHandle, RedirectHandle } from './current-page';
 import { DestinationRedirect, LegacyRedirect } from './LegacyRedirect';
+import { LoadPageCode } from './LoadPageCode';
 import { PageGate } from './PageGate';
 import { PAGE_COMPONENTS } from './page-components';
 import { ACCOUNT_ROUTE_ID, RootLayout } from './RootLayout';
 
 function pageRoute(page: PageDef): RouteObject {
   const handle: PageHandle = { page };
-  const Component = PAGE_COMPONENTS[page.id];
+  const { Component, shape, load } = PAGE_COMPONENTS[page.id];
   // A page that needs data exists only once the data does (`requires`).
   const element = (
-    <PageGate page={page}>
-      <Component />
-    </PageGate>
+    <>
+      {load && <LoadPageCode load={load} />}
+      <PageGate page={page}>
+        {shape === undefined ? (
+          <Component />
+        ) : (
+          // Keyed, so another page gets its own boundary and shows its skeleton
+          // rather than keeping the last page on screen during a transition.
+          <Suspense key={page.id} fallback={<PageSkeleton shape={shape} />}>
+            <Component />
+          </Suspense>
+        )}
+      </PageGate>
+    </>
   );
   if (page.scoped && page.path === '') return { index: true, element, handle };
   return { path: page.path, element, handle };

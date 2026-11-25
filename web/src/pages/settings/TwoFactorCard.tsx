@@ -1,5 +1,5 @@
 import { BRANDING } from '@fireside/shared';
-import { useRef, useState, type Ref, type SyntheticEvent } from 'react';
+import { Suspense, useRef, useState, type Ref, type SyntheticEvent } from 'react';
 import {
   useAuthMe,
   useIsAdmin,
@@ -16,12 +16,15 @@ import { type CodeFieldHandle } from '@/components/CodeField';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { CopyButton } from '@/components/CopyButton';
 import { FormField } from '@/components/FormField';
-import { QrCode } from '@/components/QrCode';
 import { TwoFactorCodeField } from '@/components/TwoFactorCodeField';
 import { codeReady, isCompleteCode } from '@/lib/code';
+import { lazyNamed } from '@/lib/lazy';
 import { CardSkeleton } from '@/components/states';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Skeleton } from '@/components/ui/skeleton';
+import { cn } from '@/lib/utils';
+import { useDelayedFlag } from '@/hooks/useDelayedFlag';
 import { useFormat } from '@/hooks/useFormat';
 import { codeFieldRejected } from '@/lib/code-errors';
 
@@ -35,6 +38,25 @@ type Step =
   | { step: 'password' }
   | { step: 'scan'; secret: string; otpauthUri: string }
   | { step: 'codes'; codes: string[] };
+
+// The QR code library is only needed here, so it loads on its own: when setup
+// starts, so it is there by the time the QR code is shown.
+const { Component: QrCode, load: loadQrCode } = lazyNamed(
+  () => import('@/components/QrCode'),
+  'QrCode',
+);
+
+/** The QR code's place while its code loads (192 px, as `QrCode`). */
+function QrSkeleton() {
+  const shown = useDelayedFlag(true);
+  return (
+    <Skeleton
+      aria-busy="true"
+      aria-label="Loading"
+      className={cn('size-48 shrink-0', !shown && 'invisible')}
+    />
+  );
+}
 
 /** Saves the recovery codes as a text file, with no `data:` URI. */
 function downloadCodes(codes: string[]) {
@@ -190,7 +212,9 @@ function ScanStep({
         Then enter the code the app shows.
       </p>
       <div className="flex flex-wrap items-center gap-5">
-        <QrCode value={otpauthUri} label="QR code for your authenticator app" />
+        <Suspense fallback={<QrSkeleton />}>
+          <QrCode value={otpauthUri} label="QR code for your authenticator app" />
+        </Suspense>
         <div className="flex min-w-0 flex-1 basis-[200px] flex-col gap-2.5">
           <span className="text-xs text-text-3">Or type this key into the app</span>
           <code className="font-mono text-sm leading-[1.7] break-all select-all">
@@ -389,6 +413,8 @@ export function TwoFactorCard() {
         <Button
           className="desk:self-start"
           onClick={() => {
+            // A failed load shows up when the QR code renders.
+            loadQrCode().catch(() => undefined);
             setStep({ step: 'password' });
           }}
         >

@@ -12,6 +12,7 @@ import {
 import { ChartTooltipBox } from '@/components/ChartTooltipBox';
 import { useFormat } from '@/hooks/useFormat';
 import { CHART_CURSOR, seriesLineProps, valueDomain } from '@/lib/chart';
+import { SPARKLINE_AREA_HEIGHT, SPARKLINE_HEIGHT } from '@/lib/sparkline';
 
 export interface SparklinePoint {
   /** Local date (`2026-11-09`). */
@@ -35,11 +36,6 @@ export interface SparklineProps {
   startLabel?: string;
   endLabel?: string;
 }
-
-/** Height of the line. */
-export const SPARKLINE_HEIGHT = 56;
-/** Height of the `area` variant, without the labels under it. */
-export const SPARKLINE_AREA_HEIGHT = 64;
 
 function useTooltip(format: (value: number) => ReactNode) {
   const time = useFormat();

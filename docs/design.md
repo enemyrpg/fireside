@@ -563,6 +563,17 @@ An invitation, not an apology: one sentence, and an action where it fits.
 - A skeleton in the shape of the content, per card. Never a spinner for the
   whole page.
 - Skeletons show after 200 ms, so fast answers don't flash.
+- Every page except Home loads its own code the first time it is opened. Until
+  it is there, the page shows a skeleton in its rough shape: a grid of cards, one
+  long list card, or the settings menu with cards beside it. The header and
+  menus stay. The net worth sparkline on Home, the QR code and the calendar
+  load the same way, with a skeleton of their exact size, so nothing moves when
+  they appear.
+- **After a release**, an open tab may ask for code that no longer exists. It
+  then shows the full-page message "A new version is available" with a Reload
+  button. It never reloads by itself, so a file that keeps failing can't cause
+  a reload loop. If the server still serves the same version (e.g. the
+  connection dropped), the message is "Couldn't load this page" instead.
 - A button that is waiting says so ("Creating…", "Rebuilding…") and can't be
   pressed twice.
 
