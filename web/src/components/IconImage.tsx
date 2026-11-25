@@ -45,10 +45,12 @@ export function IconImage({
   const loaded = status === 'loaded';
 
   // `complete` alone is also true for a broken image, so check its size too.
+  // Right after `src` changes, a browser may still report the previous image
+  // as complete, with its size: only trust it when it is the image asked for.
   // State set in a ref callback renders again before the browser paints.
   const checkComplete = useCallback(
     (img: HTMLImageElement | null) => {
-      if (img?.complete && img.naturalWidth > 0) {
+      if (img?.complete && img.naturalWidth > 0 && img.currentSrc === img.src) {
         setState((current) =>
           current.src === src && current.status === 'loaded' ? current : { src, status: 'loaded' },
         );

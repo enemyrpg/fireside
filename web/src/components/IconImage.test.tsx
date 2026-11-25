@@ -2,11 +2,26 @@ import { fireEvent, render } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { IconImage } from './IconImage';
 
-// jsdom never loads images: `complete` is true and `naturalWidth` 0. These
-// tests set both to what a browser reports for a cached or a broken image.
-function imageState({ complete, naturalWidth }: { complete: boolean; naturalWidth: number }) {
+// jsdom never loads images: `complete` is true, `naturalWidth` 0 and
+// `currentSrc` empty. These tests set them to what a browser reports for a
+// cached, a broken or a previous image. By default `currentSrc` is the image
+// asked for (`src`).
+function imageState({
+  complete,
+  naturalWidth,
+  currentSrc,
+}: {
+  complete: boolean;
+  naturalWidth: number;
+  currentSrc?: string;
+}) {
   vi.spyOn(HTMLImageElement.prototype, 'complete', 'get').mockReturnValue(complete);
   vi.spyOn(HTMLImageElement.prototype, 'naturalWidth', 'get').mockReturnValue(naturalWidth);
+  vi.spyOn(HTMLImageElement.prototype, 'currentSrc', 'get').mockImplementation(function (
+    this: HTMLImageElement,
+  ) {
+    return currentSrc ?? this.src;
+  });
 }
 
 function renderIcon(src = '/api/v1/items/4151/icon') {
@@ -54,6 +69,29 @@ describe('IconImage', () => {
   it('does not take a complete but broken image (no size) as loaded', () => {
     imageState({ complete: true, naturalWidth: 0 });
     const { container } = renderIcon();
+    expect(box(container).dataset.iconStatus).toBe('loading');
+    expect(box(container).textContent).toBe('Ab');
+  });
+
+  it('does not take the previous image, still complete, as the new one loaded', () => {
+    imageState({ complete: true, naturalWidth: 32 });
+    const { container, rerender } = renderIcon('/api/v1/items/1/icon');
+    expect(box(container).dataset.iconStatus).toBe('loaded');
+    // What a browser may report right after `src` changes: the old image is
+    // still the current one, complete and with its size.
+    const previous = container.querySelector('img')?.src ?? '';
+    imageState({ complete: true, naturalWidth: 32, currentSrc: previous });
+    rerender(
+      <IconImage
+        src="/api/v1/items/2/icon"
+        placeholder="Ab"
+        width={24}
+        height={24}
+        boxClassName="size-6"
+        placeholderClassName="border-dashed"
+        imageClassName="size-6"
+      />,
+    );
     expect(box(container).dataset.iconStatus).toBe('loading');
     expect(box(container).textContent).toBe('Ab');
   });

@@ -25,10 +25,14 @@ stale-while-revalidate=604800`, with their `ETag` and a `304` for a matching
 ## Consequences
 
 - Icons show at once on remount and within a day make no requests.
-- An icon replaced on the server can show its old image for up to a day; the
-  `ETag` check brings the new one after that.
-- On a shared device, the browser cache can keep icons for a day after
-  logout. That shows which items were viewed, but no user data: icons are
+- After that day, for up to 7 more days, the browser still shows a cached icon
+  at once and checks it with the server in the background (a `304` when it has
+  not changed). An icon replaced on the server could therefore show its old
+  image once more, up to 8 days after it was cached. Icons can't be replaced
+  through the API anyway ([ADR 0015](0015-icons-from-the-users-client.md)):
+  only by deleting the row, after which the plugin uploads it again.
+- On a shared device, the browser cache can keep icons after logout, usable
+  for up to 8 days. That shows which items were viewed, but no user data: icons are
   shared by the instance ([ADR 0015](0015-icons-from-the-users-client.md)),
   the same image for every user, with no amounts, names or account. This is
   accepted because it reveals no more than which game items were looked at,

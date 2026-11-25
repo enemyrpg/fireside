@@ -170,8 +170,11 @@ through the trusted tunnel. IPv6 addresses are counted per /64.
 Every response under `/api` has `Cache-Control: no-store`, errors included.
 The one exception is a found icon: `private, max-age=86400,
 stale-while-revalidate=604800` with an `ETag`. The browser uses it for a day
-without asking, then checks it with `If-None-Match` (a `304` when it has not
-changed), and `private` keeps shared caches from storing it. A missing icon
+without asking. After that, for up to 7 more days, it still shows the icon at
+once and checks it in the background with `If-None-Match` (a `304` when it has
+not changed). `private` keeps shared caches from storing it. Icons can't be
+replaced through the API anyway
+([ADR 0015](decisions/0015-icons-from-the-users-client.md)). A missing icon
 (`404`) is `no-store`, so an icon uploaded later shows up on the next view
 ([ADR 0018](decisions/0018-icons-cached-privately-for-a-day.md)).
 
