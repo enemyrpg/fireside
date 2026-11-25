@@ -53,12 +53,15 @@ export const SECURITY_HEADERS: Readonly<Record<string, string>> = {
 
 /**
  * The one exception to `no-store` under `/api`: a found icon (routes/items.ts).
- * The browser may keep it but must check it with the server every time (a
- * cheap `304` via `ETag`), and `private` keeps Cloudflare and any other
- * shared cache from ever storing it. No `max-age`, so it is never used
- * without that check. Any other value under `/api` becomes `no-store`.
+ * The browser may use it for a day without asking, then serves it while it
+ * checks it with the server (a cheap `304` via `ETag`) for up to a week more.
+ * `private` keeps Cloudflare and any other shared cache from ever storing it.
+ * A missing icon (404) stays `no-store`, so a newly uploaded one shows up at
+ * once. Icons are shared by the instance and hold no user data
+ * (docs/decisions/0018-icons-cached-privately-for-a-day.md). Any other value
+ * under `/api` becomes `no-store`.
  */
-export const PRIVATE_REVALIDATE = 'private, no-cache';
+export const ICON_CACHE = 'private, max-age=86400, stale-while-revalidate=604800';
 
 export interface SecurityHeadersOptions {
   /** Host of `PUBLIC_URL` (`publicHostOf`). HSTS is only sent for it. */
@@ -91,8 +94,8 @@ export function addSecurityHeaders(app: FastifyInstance, { publicHost }: Securit
       void reply.header('strict-transport-security', STRICT_TRANSPORT_SECURITY);
     }
     // API responses are per user and must never be stored by a browser or a
-    // proxy. Only a found icon may be kept privately (`PRIVATE_REVALIDATE`).
-    if (isApiPath(request.url) && reply.getHeader('cache-control') !== PRIVATE_REVALIDATE) {
+    // proxy. Only a found icon may be kept privately (`ICON_CACHE`).
+    if (isApiPath(request.url) && reply.getHeader('cache-control') !== ICON_CACHE) {
       void reply.header('cache-control', 'no-store');
     }
     done(null, payload);

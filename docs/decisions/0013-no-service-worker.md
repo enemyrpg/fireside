@@ -21,3 +21,6 @@ desktop, and iOS never did.
   logging out. `/api` stays `no-store` and `index.html` `no-cache`.
 - No offline mode and no push notifications.
 - Adding a service worker needs a new decision.
+
+See also [ADR 0018](0018-icons-cached-privately-for-a-day.md): found icons may
+be kept in the browser's own cache for a day.

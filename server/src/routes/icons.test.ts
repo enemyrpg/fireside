@@ -18,7 +18,7 @@ import type { FastifyInstance, InjectOptions } from 'fastify';
 import { eq } from 'drizzle-orm';
 import { afterEach, describe, expect, it } from 'vitest';
 import { buildApp, type BuildAppOptions } from '../app.js';
-import { PRIVATE_REVALIDATE } from '../security-headers.js';
+import { ICON_CACHE } from '../security-headers.js';
 import { createApiKey, ownKey } from '../auth/api-keys.js';
 import type { Database } from '../db/index.js';
 import { events, itemIcons, namedIcons } from '../db/schema.js';
@@ -310,7 +310,7 @@ describe('icon ingest auth and rate limit', () => {
 });
 
 describe('GET /api/v1/items/:itemId/icon', () => {
-  it('serves the stored PNG with ETag, private revalidation and security headers', async () => {
+  it('serves the stored PNG with ETag, private caching and security headers', async () => {
     const h = setup();
     await upload(h, [{ itemId: 4151, png: png() }]);
     const response = await getIcon(h, '4151');
@@ -318,7 +318,7 @@ describe('GET /api/v1/items/:itemId/icon', () => {
     expect(response.headers).toMatchObject({
       'content-type': 'image/png',
       etag: `"${sha256(makeSolidPng(32, 32, RED))}"`,
-      'cache-control': PRIVATE_REVALIDATE,
+      'cache-control': ICON_CACHE,
       'x-content-type-options': 'nosniff',
       'content-security-policy': "default-src 'none'",
     });
@@ -333,7 +333,7 @@ describe('GET /api/v1/items/:itemId/icon', () => {
       const response = await getIcon(h, '4151', { 'if-none-match': header });
       expect(response.statusCode).toBe(304);
       expect(response.headers.etag).toBe(etag);
-      expect(response.headers['cache-control']).toBe(PRIVATE_REVALIDATE);
+      expect(response.headers['cache-control']).toBe(ICON_CACHE);
       expect(response.rawPayload.length).toBe(0);
     }
     expect((await getIcon(h, '4151', { 'if-none-match': '"other"' })).statusCode).toBe(200);
@@ -632,30 +632,47 @@ describe('POST /api/v1/ingest/icons/wanted with skills and bosses', () => {
 });
 
 describe('icon caching (the one exception to no-store under /api)', () => {
-  it('is never public and has no max-age, so Cloudflare never stores an icon', async () => {
+  // The exact value, not the constant: the header itself is what browsers and
+  // Cloudflare see (docs/decisions/0018-icons-cached-privately-for-a-day.md).
+  const CACHED = 'private, max-age=86400, stale-while-revalidate=604800';
+
+  it('caches a found icon privately for a day, on 200 and 304, never public', async () => {
     const h = setup();
     await upload(h, [{ itemId: 4151, png: png() }, skillIcon('ATTACK'), bossIcon('Zulrah', BLUE)]);
     for (const url of [
       '/api/v1/items/4151/icon',
       '/api/v1/skills/ATTACK/icon',
       bossUrl('Zulrah'),
-      '/api/v1/items/1/icon',
-      '/api/v1/skills/MAGIC/icon',
     ]) {
       const first = await get(h, url);
-      const etag = first.headers.etag;
-      const responses = [
-        first,
-        ...(etag === undefined ? [] : [await get(h, url, { 'if-none-match': etag })]),
-      ];
-      for (const response of responses) {
-        const value = String(response.headers['cache-control']);
-        expect(value).toMatch(/\b(private|no-store)\b/);
-        expect(value).not.toMatch(/\bpublic\b/);
-        expect(value).not.toMatch(/max-age/);
-        expect(value).not.toMatch(/immutable/);
+      expect(first.statusCode).toBe(200);
+      const etag = String(first.headers.etag);
+      expect(etag).toMatch(/^"[0-9a-f]{64}"$/);
+      const again = await get(h, url, { 'if-none-match': etag });
+      expect(again.statusCode).toBe(304);
+      for (const response of [first, again]) {
+        expect({ url, value: response.headers['cache-control'] }).toEqual({ url, value: CACHED });
+        expect(response.headers.etag).toBe(etag);
       }
     }
+  });
+
+  it('never lets a browser or proxy store a missing icon', async () => {
+    const h = setup();
+    for (const url of ['/api/v1/items/1/icon', '/api/v1/skills/MAGIC/icon', bossUrl('Vorkath')]) {
+      const response = await get(h, url);
+      expect(response.statusCode).toBe(404);
+      expect({ url, value: response.headers['cache-control'] }).toEqual({ url, value: 'no-store' });
+    }
+  });
+
+  it('serves an icon uploaded after a 404 on the next request', async () => {
+    const h = setup();
+    expect((await getIcon(h, '4151')).statusCode).toBe(404);
+    await upload(h, [{ itemId: 4151, png: png() }]);
+    const response = await getIcon(h, '4151');
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['cache-control']).toBe(CACHED);
   });
 });
 
@@ -672,7 +689,7 @@ describe('GET /api/v1/skills/:skill/icon and /bosses/:boss/icon', () => {
       expect(response.headers).toMatchObject({
         'content-type': 'image/png',
         etag: `"${sha256(makeSolidPng(25, 25, rgba))}"`,
-        'cache-control': PRIVATE_REVALIDATE,
+        'cache-control': ICON_CACHE,
         'x-content-type-options': 'nosniff',
         'content-security-policy': "default-src 'none'",
       });
