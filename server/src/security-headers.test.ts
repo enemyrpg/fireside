@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from './app.js';
 import {
   CONTENT_SECURITY_POLICY,
-  PRIVATE_REVALIDATE,
+  ICON_CACHE,
   SECURITY_HEADERS,
   STRICT_TRANSPORT_SECURITY,
 } from './security-headers.js';
@@ -153,10 +153,12 @@ describe('security headers', () => {
     it.each([
       ['public, max-age=60', 'no-store'],
       ['private, max-age=86400', 'no-store'],
+      ['public, max-age=86400, stale-while-revalidate=604800', 'no-store'],
+      ['private, no-cache', 'no-store'],
       ['no-cache', 'no-store'],
-      [PRIVATE_REVALIDATE, PRIVATE_REVALIDATE],
+      [ICON_CACHE, ICON_CACHE],
     ])(
-      'turns %j from an /api route into %j: only private revalidation is kept',
+      'turns %j from an /api route into %j: only the icon cache value is kept',
       async (set, sent) => {
         app.get('/api/v1/test-cache', (_request, reply) =>
           reply.header('cache-control', set).send({}),
@@ -166,8 +168,9 @@ describe('security headers', () => {
       },
     );
 
-    it('keeps the exception private and without max-age', () => {
-      expect(PRIVATE_REVALIDATE).toBe('private, no-cache');
+    it('keeps the exception private, for a day, then stale while it revalidates', () => {
+      expect(ICON_CACHE).toBe('private, max-age=86400, stale-while-revalidate=604800');
+      expect(ICON_CACHE).not.toMatch(/\b(public|immutable)\b/);
     });
 
     it('leaves the caching of dashboard files alone', async () => {

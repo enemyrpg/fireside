@@ -168,8 +168,12 @@ through the trusted tunnel. IPv6 addresses are counted per /64.
 ## Caching
 
 Every response under `/api` has `Cache-Control: no-store`, errors included.
-The one exception is a found icon: `private, no-cache` with an `ETag`, so the
-browser keeps it but asks every time and shared caches never store it.
+The one exception is a found icon: `private, max-age=86400,
+stale-while-revalidate=604800` with an `ETag`. The browser uses it for a day
+without asking, then checks it with `If-None-Match` (a `304` when it has not
+changed), and `private` keeps shared caches from storing it. A missing icon
+(`404`) is `no-store`, so an icon uploaded later shows up on the next view
+([ADR 0018](decisions/0018-icons-cached-privately-for-a-day.md)).
 
 ## Versioning
 

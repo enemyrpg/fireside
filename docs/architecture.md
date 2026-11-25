@@ -366,9 +366,11 @@ mode accepts Cloudflare's headers on requests from loopback for the
 Every response gets the security headers in `server/src/security-headers.ts`
 (a strict CSP without inline scripts, `nosniff`, `no-referrer`, no framing),
 and everything under `/api` is `Cache-Control: no-store`, except a found icon
-(`private, no-cache`). The dashboard has no service worker
-([ADR 0013](decisions/0013-no-service-worker.md)), so nothing is cached on a
-shared phone after logging out.
+(`private, max-age=86400, stale-while-revalidate=604800`,
+[ADR 0018](decisions/0018-icons-cached-privately-for-a-day.md)). The dashboard
+has no service worker ([ADR 0013](decisions/0013-no-service-worker.md)), so no
+user data is cached on a shared phone after logging out: only icons, which are
+the same for every user.
 
 ## Backups, the lock and the CLI
 

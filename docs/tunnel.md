@@ -240,7 +240,8 @@ be undone.
 ### Don't cache the API
 
 **Why:** API responses hold your data. Fireside already marks them
-`Cache-Control: no-store` (icons `private, no-cache`), and Cloudflare doesn't
+`Cache-Control: no-store` (found icons `private` for a day, which Cloudflare
+never stores), and Cloudflare doesn't
 cache JSON by default, but a rule makes sure no setting elsewhere changes
 that.
 
