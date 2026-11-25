@@ -11,8 +11,21 @@
 //      source on or point at real data before anything starts, and
 //      `assertNoActiveSources` asks the running server and stops it if any
 //      source is enabled or a contact is set.
+//
+// Each server also leaves two files in its data folder:
+//
+//   - `scratch-server.pid`, written right after spawning and removed when the
+//     server exits while its script still runs. If the script crashes, the
+//     server keeps running and the file stays: stop the server by that
+//     recorded PID (`kill (cat <data-dir>/scratch-server.pid)`), never by
+//     searching the process list, then delete the file, so a later process
+//     that gets the same PID is never stopped by mistake.
+//   - `server.log`, the server's log at `info`, the level external requests
+//     are logged at ("External request done"). When the server exits, the
+//     helper reads it and fails the run if it holds an external request.
 
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { closeSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -25,12 +38,18 @@ const REAL_DATA_DIRS = ['data', 'data-dev', 'data-seed'];
 /** The Docker instance's port. */
 const RESERVED_PORT = 3100;
 
+/** In the data folder: the server's PID, from spawn until it exits. */
+export const PID_FILE = 'scratch-server.pid';
+/** In the data folder: the server's log. */
+export const LOG_FILE = 'server.log';
+
 /** Variables a process needs to run at all. Nothing of the server's own configuration. */
 const PASSED_ON = ['PATH', 'HOME', 'LANG', 'LC_ALL', 'TMPDIR', 'CI'];
 
 export interface ScratchOptions {
   /** Time zone of the server (default `Europe/Oslo`). */
   timeZone?: string;
+  /** Default `info`: external requests are logged there, and the log is checked for them. */
   logLevel?: string;
 }
 
@@ -57,7 +76,7 @@ export function scratchEnv(
     HOST: '127.0.0.1',
     PORT: String(port),
     TZ: options.timeZone ?? 'Europe/Oslo',
-    LOG_LEVEL: options.logLevel ?? 'warn',
+    LOG_LEVEL: options.logLevel ?? 'info',
     BACKUP_ENABLED: 'false',
     PRICES_ENABLED: 'false',
     RUNEPROFILE_ENABLED: 'false',
@@ -172,6 +191,39 @@ export async function assertNoActiveSources(base: string): Promise<void> {
   }
 }
 
+/** Lines of a server log that record an external request (server/src/external/client.ts). */
+export function externalRequestLines(log: string): string[] {
+  return log.split('\n').filter((line) => line.includes('External request'));
+}
+
+/**
+ * Spawns `args` with `env`, its log (stdout) in `dir/server.log` and its PID in
+ * `dir/scratch-server.pid` at once, so the PID is on record even if the caller
+ * crashes. The PID file goes when the process exits, so it never names a PID
+ * that may since belong to another process.
+ */
+export function spawnRecorded(dir: string, env: NodeJS.ProcessEnv, args: string[]): ChildProcess {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const pidFile = join(dir, PID_FILE);
+  const log = openSync(join(dir, LOG_FILE), 'a', 0o600);
+  try {
+    const child = spawn(process.execPath, args, {
+      cwd: REPO_ROOT,
+      env,
+      stdio: ['ignore', log, 'inherit'],
+    });
+    if (child.pid === undefined) throw new Error('The server did not start');
+    writeFileSync(pidFile, `${String(child.pid)}\n`, { mode: 0o600 });
+    child.once('exit', () => {
+      rmSync(pidFile, { force: true });
+    });
+    return child;
+  } finally {
+    // The child has its own copy of the file descriptor.
+    closeSync(log);
+  }
+}
+
 export interface ScratchServer {
   base: string;
   port: number;
@@ -190,10 +242,20 @@ export async function startScratchServer(
   const env = scratchEnv(dir, port, options);
   assertScratchEnv(env);
   const base = `http://localhost:${String(port)}`;
-  const server = spawn(process.execPath, ['server/dist/index.js'], {
-    cwd: REPO_ROOT,
-    env,
-    stdio: ['ignore', 'ignore', 'inherit'],
+  const server = spawnRecorded(dir, env, ['server/dist/index.js']);
+  // Fails the run if the server called out after all, whatever the caller does.
+  server.once('exit', () => {
+    let lines: string[] = [];
+    try {
+      lines = externalRequestLines(readFileSync(join(dir, LOG_FILE), 'utf8'));
+    } catch (error) {
+      console.error(`Could not read the scratch server log: ${(error as Error).message}`);
+      process.exitCode = 1;
+    }
+    if (lines.length > 0) {
+      console.error(`The scratch server made external requests:\n  ${lines.join('\n  ')}`);
+      process.exitCode = 1;
+    }
   });
   try {
     await waitForHealth(base, server);
