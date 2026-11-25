@@ -73,3 +73,9 @@ version, set by hand by the contract rule.
 - The image is only as trusted as the workflow that built it; the
   attestation lets anyone check that it came from this repository's
   `release-image.yml`.
+- A required check is a job name, and a job that is skipped counts as passed,
+  also when it was skipped because a job it needs failed. So when a required
+  check is split into parallel jobs, the required name goes to a summary job
+  that always runs and fails unless each job passed or was skipped by the
+  change filter ("Lint, test and build" in `.github/workflows/ci.yml`). The
+  ruleset keeps the same check names.

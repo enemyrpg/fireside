@@ -63,7 +63,11 @@ function requiredChecks(calls: Call[]): string[] | undefined {
     ?.parameters?.required_status_checks?.map((check) => check.context);
 }
 
-/** `name:` of every job in .github/workflows/ that runs on pull requests. */
+/**
+ * `name:` of every job in .github/workflows/ that runs on pull requests,
+ * except the jobs a summary job covers (listed in its `needs` and checked by
+ * it, see "Lint, test and build" in ci.yml): only the summary is required.
+ */
 function pullRequestJobNames(): string[] {
   const dir = join(ROOT, '.github', 'workflows');
   return readdirSync(dir)
@@ -71,10 +75,18 @@ function pullRequestJobNames(): string[] {
     .flatMap((file) => {
       const workflow = parse(readFileSync(join(dir, file), 'utf8')) as {
         on: Record<string, unknown>;
-        jobs: Record<string, { name?: string }>;
+        jobs: Record<string, { name?: string; needs?: string[] | string; if?: string }>;
       };
       if (!('pull_request' in workflow.on)) return [];
-      return Object.entries(workflow.jobs).map(([id, job]) => job.name ?? id);
+      const summarized = new Set(
+        Object.values(workflow.jobs)
+          .filter((job) => job.if?.includes('always()'))
+          .flatMap((job) => (Array.isArray(job.needs) ? job.needs : []))
+          .filter((id) => id !== 'changes'),
+      );
+      return Object.entries(workflow.jobs)
+        .filter(([id]) => !summarized.has(id))
+        .map(([id, job]) => job.name ?? id);
     });
 }
 
