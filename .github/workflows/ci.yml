@@ -15,14 +15,17 @@ concurrency:
 
 # Actions minutes are limited, so:
 # - "Lint, test and build" runs on pull requests and by hand, not on push to
-#   main: a PR run already tested the merge with main.
+#   main: a PR run already tested the merge with main. It is a summary of
+#   parallel jobs: "Lint and type check", "Server tests" (in shards), "Web,
+#   shared and scripts tests" and "Build". Only the summary is a required
+#   check (see its comment for why it checks the other jobs itself).
 # - On pull requests, "changes" decides which jobs are needed. A docs-only PR
-#   skips "Lint, test and build", and a PR that touches nothing in the image
-#   skips "Docker image". Skipped jobs count as passed for required checks.
-#   A PR that only touches web/ runs only the web tests, and one that only
-#   touches server/ only the server tests (the `tests` output). Anything
-#   else (shared/, scripts/, .github/, root config) runs every test. Lint,
-#   type check and build always cover the whole repo.
+#   skips the lint, test and build jobs, and a PR that touches nothing in the
+#   image skips "Docker image". Skipped jobs count as passed for required
+#   checks. A PR that only touches web/ skips the server tests, and one that
+#   only touches server/ skips the web, shared and scripts tests (the `tests`
+#   output). Anything else (shared/, scripts/, .github/, root config) runs
+#   every test. Lint, type check and build always cover the whole repo.
 #   This is why there is no workflow-level `paths:`: it would leave required
 #   checks pending.
 # - "CSP in Chromium" runs the built dashboard in Chromium. On pull requests
@@ -30,7 +33,7 @@ concurrency:
 #   always on push to main.
 # - "Docs" checks relative links in Markdown and the .env reference
 #   (scripts/docs-check/check-docs.ts). It runs on every pull request, also
-#   docs-only ones that skip "Lint, test and build", and needs no
+#   docs-only ones that skip the lint, test and build jobs, and needs no
 #   `pnpm install`.
 # - If "changes" fails, every job runs (fail open).
 jobs:
@@ -87,21 +90,20 @@ jobs:
           echo "docker=$docker" >> "$GITHUB_OUTPUT"
           echo "csp=$csp" >> "$GITHUB_OUTPUT"
 
-  check:
-    name: Lint, test and build
+  # "Lint, test and build" is four jobs that run in parallel, and a summary job
+  # with the old name, the required check. Each job has the same condition:
+  # pull requests that change code (and manual runs), and every job if
+  # "changes" failed. Runner speed varies by about 2× between runs (on
+  # 19 November 2026 every step was 1.6–2× slower on an older runner image),
+  # so each timeout is about twice the slowest time measured for that job.
+  lint:
+    name: Lint and type check
     needs: changes
     if: >-
       ${{ !cancelled() && github.event_name != 'push' &&
       (needs.changes.result != 'success' || needs.changes.outputs.code == 'true') }}
     runs-on: ubuntu-latest
-    # Runner speed varies by about 2× between runs (the same tests took 7 and
-    # 13+ minutes in November 2026), so leave room above the usual ~10 minutes.
-    # 19 November 2026: three runs in a row hit the old limit of 20 minutes with
-    # no failing or hanging test. Every step was 1.6–2× slower than in a run a
-    # few hours earlier, lint and tests of untouched code included, on an older
-    # runner image (20261111.196.1, the faster run had 20261116.202.1).
-    # `pnpm test` alone needed over 18 minutes instead of ~10.
-    timeout-minutes: 30
+    timeout-minutes: 6
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -137,22 +139,137 @@ jobs:
           fi
 
       - run: pnpm typecheck
-      # Vitest's default is one worker fewer than the cores. The runner has
-      # two, so the test files ran one at a time with a core idle: about 20
-      # minutes in November 2026. 100% is one worker per core.
-      #
-      # On a pull request only the projects "changes" found affected (`web`
-      # or `server`). Everything on a manual run, and if "changes" failed or
-      # gave anything else (fail open).
+
+  # The server tests are over 90% of the test time, so they are split into
+  # shards by test file. Each shard builds its own copies of the seed datasets
+  # the `*-seed.test.ts` files share (server/vitest.global-setup.ts).
+  #
+  # Vitest's default is one worker fewer than the cores; 100% is one worker
+  # per core (the runner has 4).
+  #
+  # On a pull request that only changes web/, "changes" gives tests=web and
+  # this job is skipped.
+  test-server:
+    name: Server tests (${{ matrix.shard }}/${{ strategy.job-total }})
+    needs: changes
+    if: >-
+      ${{ !cancelled() && github.event_name != 'push' &&
+      (needs.changes.result != 'success' ||
+      (needs.changes.outputs.code == 'true' && needs.changes.outputs.tests != 'web')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
       - name: Run tests
         env:
-          TESTS: ${{ needs.changes.outputs.tests }}
+          SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
         run: |
-          case "$TESTS" in
-            web | server) pnpm test --maxWorkers=100% --project "$TESTS" ;;
-            *) pnpm test --maxWorkers=100% ;;
-          esac
+          echo "Cores: $(nproc)"
+          pnpm test --maxWorkers=100% --project server --shard="$SHARD"
+
+  # On a pull request that only changes server/, "changes" gives tests=server
+  # and this job is skipped.
+  test-web:
+    name: Web, shared and scripts tests
+    needs: changes
+    if: >-
+      ${{ !cancelled() && github.event_name != 'push' &&
+      (needs.changes.result != 'success' ||
+      (needs.changes.outputs.code == 'true' && needs.changes.outputs.tests != 'server')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test --maxWorkers=100% --project web --project shared --project scripts
+
+  # Lint, type check and tests resolve @fireside/shared to its source (the
+  # "@fireside/source" condition), so only this job builds it.
+  build:
+    name: Build
+    needs: changes
+    if: >-
+      ${{ !cancelled() && github.event_name != 'push' &&
+      (needs.changes.result != 'success' || needs.changes.outputs.code == 'true') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
       - run: pnpm build
+
+  # The required check. A job skipped because a job it needs failed counts as
+  # passed for a required check, and so does a skipped summary. So this job
+  # always runs (except on push, where none of them run) and decides itself:
+  # every job it needs must have succeeded, or have been skipped because
+  # "changes" said it wasn't needed. A failure, a cancellation or any other
+  # skip fails it. If "changes" failed, every job runs and must pass.
+  check:
+    name: Lint, test and build
+    needs: [changes, lint, test-server, test-web, build]
+    if: ${{ always() && github.event_name != 'push' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check the results of the jobs
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          changes=$(jq -r '.changes.result' <<< "$NEEDS")
+          code=$(jq -r '.changes.outputs.code // ""' <<< "$NEEDS")
+          tests=$(jq -r '.changes.outputs.tests // ""' <<< "$NEEDS")
+          echo "changes: result=$changes code=$code tests=$tests"
+          failed=0
+          printf '%-12s %-10s %s\n' job result verdict
+          for job in lint test-server test-web build; do
+            result=$(jq -r --arg job "$job" '.[$job].result' <<< "$NEEDS")
+            verdict=fail
+            if [ "$result" = success ]; then
+              verdict=ok
+            elif [ "$result" = skipped ] && [ "$changes" = success ]; then
+              # Skipped only counts when "changes" explains it.
+              if [ "$code" = false ] ||
+                { [ "$job" = test-server ] && [ "$tests" = web ]; } ||
+                { [ "$job" = test-web ] && [ "$tests" = server ]; }; then
+                verdict='ok (not needed)'
+              fi
+            fi
+            printf '%-12s %-10s %s\n' "$job" "$result" "$verdict"
+            if [ "$verdict" = fail ]; then failed=1; fi
+          done
+          if [ "$failed" = 1 ]; then
+            echo "::error::A lint, test or build job failed, was cancelled or was skipped without a reason."
+            exit 1
+          fi
 
   # Relative links in Markdown resolve, and docs/self-hosting.md lists exactly
   # the variables in .env.example. Plain Node, no dependencies.

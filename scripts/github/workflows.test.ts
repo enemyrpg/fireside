@@ -13,7 +13,16 @@ const FILES = readdirSync(DIR).filter((file) => /\.ya?ml$/.test(file));
 interface Workflow {
   on: Record<string, unknown> | string | string[];
   permissions?: unknown;
-  jobs: Record<string, { permissions?: unknown; steps?: { uses?: string }[] }>;
+  jobs: Record<
+    string,
+    {
+      name?: string;
+      needs?: string[] | string;
+      if?: string;
+      permissions?: unknown;
+      steps?: { uses?: string }[];
+    }
+  >;
 }
 
 const workflows = FILES.map((file) => {
@@ -67,5 +76,25 @@ describe('.github/workflows', () => {
         .map(([id]) => `${file}:${id}`),
     );
     expect(writers.sort()).toEqual(['release-contract.yml:release', 'release-image.yml:image']);
+  });
+
+  // A job skipped because a job it needs failed counts as passed for a
+  // required check. So the required "Lint, test and build" is a summary that
+  // always runs and checks every job it needs itself, and every lint, test
+  // and build job must be in its `needs`.
+  it('ci.yml: "Lint, test and build" summarizes every lint, test and build job', () => {
+    const ci = workflows.find(({ file }) => file === 'ci.yml')?.workflow;
+    expect(ci).toBeDefined();
+    const jobs = ci?.jobs ?? {};
+    const check = jobs.check;
+    expect(check?.name).toBe('Lint, test and build');
+    expect(check?.if).toContain('always()');
+    const others = Object.keys(jobs).filter(
+      (id) => !['check', 'docs', 'csp', 'docker'].includes(id),
+    );
+    expect([...(Array.isArray(check?.needs) ? check.needs : [])].sort()).toEqual(others.sort());
+    expect(others).toEqual(
+      expect.arrayContaining(['changes', 'lint', 'test-server', 'test-web', 'build']),
+    );
   });
 });

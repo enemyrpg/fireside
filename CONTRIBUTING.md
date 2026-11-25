@@ -141,6 +141,12 @@ The RuneLite plugin lives in its own repository,
   secrets in the commits). Checks that don't apply to a change are skipped,
   which counts as passed. None of them need secrets, so they run the same
   for pull requests from forks (after a maintainer approves the first run).
+  Lint, test and build sums up jobs that run in parallel: Lint and type check
+  (with the migration check), Server tests (split into shards), Web, shared
+  and scripts tests, and Build. It fails if any of them failed or was
+  cancelled, and passes only when each one passed or was skipped because the
+  change doesn't need it (a docs-only change skips them all, a change only in
+  `web/` skips the server tests, one only in `server/` the other tests).
 - **Tests:** contract validation and every calculation (gains, sessions,
   screen time, weekly summaries, goals) need tests. Tests use a mocked
   `fetch`, never the real network.
