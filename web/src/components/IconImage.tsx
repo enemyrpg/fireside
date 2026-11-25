@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { cn } from '@/lib/utils';
 
 type Status = 'loading' | 'loaded' | 'failed';
@@ -6,7 +6,9 @@ type Status = 'loading' | 'loaded' | 'failed';
 /**
  * The real icon over a text placeholder, shared by `ItemIcon`, `SkillIcon` and
  * `BossIcon`. The placeholder shows while the image loads, and stays when there
- * is none (404) or it can't be shown. The box always has the same size, so
+ * is none (404) or it can't be shown. An image the browser already has (from
+ * its cache, or the same icon shown elsewhere) starts as loaded, so a remount
+ * shows no placeholder frame. The box always has the same size, so
  * nothing moves when the image arrives. Decorative: every caller shows the name
  * next to it or in an `aria-label`, so `alt` is empty. Never ship Jagex
  * graphics in the repo: the images only live in the user's own database.
@@ -42,6 +44,21 @@ export function IconImage({
   const status: Status = state.src === src ? state.status : 'loading';
   const loaded = status === 'loaded';
 
+  // `complete` alone is also true for a broken image, so check its size too.
+  // Right after `src` changes, a browser may still report the previous image
+  // as complete, with its size: only trust it when it is the image asked for.
+  // State set in a ref callback renders again before the browser paints.
+  const checkComplete = useCallback(
+    (img: HTMLImageElement | null) => {
+      if (img?.complete && img.naturalWidth > 0 && img.currentSrc === img.src) {
+        setState((current) =>
+          current.src === src && current.status === 'loaded' ? current : { src, status: 'loaded' },
+        );
+      }
+    },
+    [src],
+  );
+
   return (
     <span
       aria-hidden="true"
@@ -57,6 +74,7 @@ export function IconImage({
       {!loaded && placeholder}
       {status !== 'failed' && (
         <img
+          ref={checkComplete}
           src={src}
           alt=""
           width={width}

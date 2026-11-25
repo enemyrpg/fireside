@@ -23,6 +23,7 @@ is. [architecture.md](../architecture.md) describes how it works.
 | [0015](0015-icons-from-the-users-client.md)                  | Icons from the user's own client                | 2026-11-15 |
 | [0016](0016-release-setup.md)                                | Releases with release-please, images on GHCR    | 2026-11-22 |
 | [0017](0017-projection-rule-changes-recompute-at-startup.md) | Rule changes recompute existing data at startup | 2026-11-23 |
+| [0018](0018-icons-cached-privately-for-a-day.md)             | Icons may be cached privately for a day         | 2026-11-25 |
 
 ## Adding a decision
 

@@ -5,7 +5,7 @@ import {
 } from '@fireside/shared';
 import type { FastifyPluginCallback, FastifyReply, FastifyRequest } from 'fastify';
 import { ApiError } from '../errors.js';
-import { PRIVATE_REVALIDATE } from '../security-headers.js';
+import { ICON_CACHE } from '../security-headers.js';
 import { getBossIcon, getIcon, getSkillIcon, type StoredIcon } from '../icons/store.js';
 import { parseRequest } from './parse.js';
 
@@ -25,15 +25,15 @@ function matchesEtag(header: string | undefined, etag: string): boolean {
 /**
  * Sends a stored icon, or 404. The same for every kind of icon: `ETag` is the
  * SHA-256 and a matching `If-None-Match` gives 304. A found icon is
- * `private, no-cache`, the one exception to `no-store` under `/api`
- * (`PRIVATE_REVALIDATE` in security-headers.ts): the browser keeps it and
- * checks it each time, and no shared cache stores it. A missing icon is
- * `no-store`, so a newly uploaded one shows up at once.
+ * cached privately for a day (`ICON_CACHE` in security-headers.ts), the one
+ * exception to `no-store` under `/api`: the browser shows it on remount
+ * without asking, checks it by `ETag` after that, and no shared cache stores
+ * it. A missing icon is `no-store`, so a newly uploaded one shows up at once.
  */
 function sendIcon(request: FastifyRequest, reply: FastifyReply, icon: StoredIcon | undefined) {
   if (!icon) throw new ApiError(404, 'NOT_FOUND', 'Icon not found');
   const etag = `"${icon.sha256}"`;
-  reply.header('ETag', etag).header('Cache-Control', PRIVATE_REVALIDATE);
+  reply.header('ETag', etag).header('Cache-Control', ICON_CACHE);
   if (matchesEtag(request.headers['if-none-match'], etag)) {
     return reply.code(304).send();
   }
