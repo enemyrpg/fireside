@@ -317,11 +317,28 @@ The server makes no network calls unless the owner turns a source on
 
 The sources today:
 
-- **OSRS Wiki Prices** (`PRICES_ENABLED`): latest GE prices, at most once an
-  hour, used only for what exists now (the latest bank, potion storage, net
-  worth). Everything that already happened keeps the price from when it
-  happened; prices never change raw or derived data. Each fetch is also kept
-  in `item_price_history` for Price movers.
+- **OSRS Wiki Prices** (`PRICES_ENABLED`): latest GE prices, used only for
+  what exists now (the latest bank, potion storage, net worth). Everything
+  that already happened keeps the price from when it happened; prices never
+  change raw or derived data. Each fetch is also kept in `item_price_history`
+  for Price movers. Prices are fetched only when they are needed
+  (`server/src/jobs/prices.ts`,
+  [ADR 0019](decisions/0019-prices-fetched-on-demand.md)):
+  - when bank data is read (bank, summary, price movers, potion storage) or a
+    session of any account is open, if the last attempt is at least an hour
+    old. A read never waits: it answers with the stored prices
+    (`prices.fetchedAt` says how old they are), and the fetch runs in the
+    background;
+  - and whenever the last attempt is 3 h 55 min old, for the price history.
+    With less than 4 hours between two fetches, a fetch is always within the
+    2 hours the 24 h period allows. 7 and 30 days compare with the first
+    fetch of each UTC day, and allow 26 hours before the target, because two
+    of those can be up to about 28 hours apart.
+
+  Never more than one fetch at a time and never more than once an hour, failed
+  attempts included. The last attempt is stored, so a restart makes no extra
+  call. That is about 6 calls a day on an idle server, and at most 24.
+
 - **RuneProfile** (`RUNEPROFILE_ENABLED`): the collection log, per account,
   only for accounts the owner turned it on for. Responses are stored exactly as
   received in `external_snapshots`, only when the content changed. The

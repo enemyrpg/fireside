@@ -53,6 +53,11 @@ export interface DashboardRoutesOptions {
   /** Set by buildApp. Without it the collection log routes are not registered. */
   clogSyncer?: ClogSyncer;
   /**
+   * Set by buildApp: bank data at current prices is being read, so the price
+   * job may fetch in the background (jobs/prices.ts). Never waited for.
+   */
+  onPricesRead?: () => void;
+  /**
    * Clock for the read endpoints (current period, end of a series) and for the
    * times stored when a key is created or revoked. Tests inject it.
    */
@@ -138,6 +143,7 @@ export const dashboardRoutes: FastifyPluginCallback<
   void app.register(bankRoutes, {
     timeZone: options.timeZone,
     currentPrices: options.config ? isSourceActive(options.config, 'WIKI_PRICES') : false,
+    ...(options.onPricesRead ? { onPricesRead: options.onPricesRead } : {}),
     ...(options.now ? { now: options.now } : {}),
   });
   void app.register(questRoutes);

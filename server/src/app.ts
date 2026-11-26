@@ -41,7 +41,8 @@ export interface BuildAppOptions {
   /**
    * Runs background jobs while the server listens: pending projections, then
    * the session timeout job (see jobs/startup.ts), and the price job when
-   * prices are on (jobs/prices.ts). Off by default so tests don't start timers.
+   * prices are on (jobs/prices.ts), which also fetches when bank data is read.
+   * Off by default so tests don't start timers or fetch on reads.
    */
   jobs?: boolean;
   /** Replaces the client for external calls. Used by tests, with a mocked fetch. */
@@ -126,9 +127,10 @@ export function buildApp({
   });
 
   let backupJob: BackupJob | undefined;
+  // Started on listen. Reads of bank data before that (or without `jobs`) fetch nothing.
+  let pricesJob: PricesJob | undefined;
   if (jobs) {
     let running: RunningJob | undefined;
-    let pricesJob: PricesJob | undefined;
     let clogJob: ClogJob | undefined;
     app.addHook('onListen', () => {
       running = startBackgroundJobs({ db: db.db, log: app.log });
@@ -138,6 +140,7 @@ export function buildApp({
         config,
         client,
         log: app.log,
+        ...(dashboard.now ? { now: dashboard.now } : {}),
       });
       if (config.runeprofile.enabled && config.userAgentContact === null) {
         app.log.warn(
@@ -207,6 +210,7 @@ export function buildApp({
     backup: { config: config.backup, state: () => backupJob?.state() },
     config,
     clogSyncer,
+    onPricesRead: () => pricesJob?.requested(),
     timeZone: config.timeZone,
     prefix: '/api/v1',
   });

@@ -77,6 +77,9 @@ export const externalSourceSchema = z
     lastFetchAt: utcTimestamp.nullable(),
     /**
      * Earliest time of the next fetch. `null` when the source is not active.
+     * For `WIKI_PRICES` it is an hour after the latest attempt: a fetch
+     * happens then only when bank data is read or a session is open, and at
+     * the latest 3 h 55 min after the latest attempt, for the price history.
      * For `RUNEPROFILE` it is six hours after the latest call: an account can
      * be synced sooner (after a session, or with "Sync now").
      */

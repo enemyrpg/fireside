@@ -26,17 +26,21 @@ export const PRICE_HISTORY_DAILY_FETCHES = 35;
  * compared against may be. Earlier is allowed generously, later hardly at
  * all, so a period is at most 2 hours shorter than its label: "7 d" on a
  * fresh instance first shows when the oldest fetch is (almost) 7 days old.
- * 24 hours is compared with hourly fetches. 7 and 30 days are compared with
- * one fetch per UTC day: with 2 hours after the target allowed, 22 hours
- * before it are needed for a fetch every 24 hours to always be in reach.
+ * 24 hours is compared with the fetches of the last 48: the price job leaves
+ * less than 4 hours between two (jobs/prices.ts), so one is always within 2
+ * hours. 7 and 30 days are compared with the first fetch of each UTC day,
+ * which lands between midnight and almost 4 hours after it, so two of them
+ * can be up to about 28 hours apart: with 2 hours after the target allowed,
+ * 26 hours before it keep one always in reach (a "7 d" baseline is then at
+ * most 7 d 26 h old). See docs/decisions/0019-prices-fetched-on-demand.md.
  */
 export const PRICE_MOVER_WINDOWS: Record<
   PriceMoverPeriod,
   { agoMs: number; earlierMs: number; laterMs: number }
 > = {
   '24h': { agoMs: DAY_MS, earlierMs: 2 * HOUR_MS, laterMs: 2 * HOUR_MS },
-  '7d': { agoMs: 7 * DAY_MS, earlierMs: 22 * HOUR_MS, laterMs: 2 * HOUR_MS },
-  '30d': { agoMs: 30 * DAY_MS, earlierMs: 22 * HOUR_MS, laterMs: 2 * HOUR_MS },
+  '7d': { agoMs: 7 * DAY_MS, earlierMs: 26 * HOUR_MS, laterMs: 2 * HOUR_MS },
+  '30d': { agoMs: 30 * DAY_MS, earlierMs: 26 * HOUR_MS, laterMs: 2 * HOUR_MS },
 };
 
 /**
