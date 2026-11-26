@@ -1,5 +1,7 @@
+import { Skeleton } from '@/components/ui/skeleton';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { formatDuration } from '@/format';
+import { useDelayedFlag } from '@/hooks/useDelayedFlag';
 import { useFormat } from '@/hooks/useFormat';
 import type { WeekDayBar } from '@/lib/overview';
 import { cn } from '@/lib/utils';
@@ -22,6 +24,8 @@ const WEEKDAY_NAMES = [
 /** Tallest bar: 60 px with the letters under it on PC, 48 px on mobile. */
 const MAX_BAR_PX = { letters: 60, compact: 48 } as const;
 const STUB_PX = 3;
+/** The bars' box, the same while they load (`WeekDayBarsPlaceholder`). */
+const WEEK_DAY_BARS_BOX = { letters: 'h-[84px] w-full', compact: 'h-12 w-24' } as const;
 
 function weekDayBarsLabel(bars: readonly WeekDayBar[]): string {
   const played = bars
@@ -54,7 +58,7 @@ export function WeekDayBars({
       aria-label={weekDayBarsLabel(bars)}
       className={cn(
         'grid grid-cols-7 items-end',
-        compact ? 'h-12 w-24 gap-1' : 'h-[84px] w-full gap-2',
+        compact ? cn(WEEK_DAY_BARS_BOX.compact, 'gap-1') : cn(WEEK_DAY_BARS_BOX.letters, 'gap-2'),
         className,
       )}
     >
@@ -103,6 +107,30 @@ export function WeekDayBars({
           </Tooltip>
         );
       })}
+    </div>
+  );
+}
+
+/**
+ * The bars' box while their play time loads: the same size from the first
+ * frame, with a skeleton after 200 ms.
+ */
+export function WeekDayBarsPlaceholder({
+  compact = false,
+  className,
+}: {
+  compact?: boolean;
+  className?: string;
+}) {
+  const shown = useDelayedFlag(true);
+  return (
+    <div
+      aria-busy="true"
+      aria-label="Loading"
+      data-testid="week-day-bars-placeholder"
+      className={cn(compact ? WEEK_DAY_BARS_BOX.compact : WEEK_DAY_BARS_BOX.letters, className)}
+    >
+      <Skeleton className={cn('size-full rounded-md', !shown && 'invisible')} />
     </div>
   );
 }

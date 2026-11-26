@@ -1,9 +1,14 @@
 import type { ReactNode } from 'react';
 import { ShowAllButton } from '@/components/ShowAll';
+import { Skeleton } from '@/components/ui/skeleton';
+import { useDelayedFlag } from '@/hooks/useDelayedFlag';
 import { useShowAll } from '@/hooks/useShowAll';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { ROWS_SHOWN } from '@/lib/show-all';
 import { cn } from '@/lib/utils';
+
+/** Height of a row, shared with `HBarListPlaceholder`. */
+const HBAR_ROW_HEIGHT = 'h-[30px]';
 
 export interface HBarRow {
   key: string;
@@ -69,8 +74,7 @@ export function HBarList({
     `${resetKey}\n${rows.map((row) => row.key).join('\n')}`,
   );
   const max = Math.max(1, ...rows.map((row) => row.value));
-  const rowClass =
-    'col-span-3 grid h-[30px] grid-cols-subgrid items-center rounded-sm focus-visible:outline-2 focus-visible:outline-accent';
+  const rowClass = `col-span-3 grid ${HBAR_ROW_HEIGHT} grid-cols-subgrid items-center rounded-sm focus-visible:outline-2 focus-visible:outline-accent`;
   const cells = (row: HBarRow) => (
     <>
       {row.icon === undefined ? (
@@ -143,5 +147,26 @@ export function HBarList({
       </ul>
       <ShowAllButton {...fold} />
     </>
+  );
+}
+
+/**
+ * `rows` rows of the list's own height while it loads, so the card has its
+ * final size from the first frame; the bars show after 200 ms.
+ */
+export function HBarListPlaceholder({ rows }: { rows: number }) {
+  const shown = useDelayedFlag(true);
+  return (
+    <div aria-busy="true" aria-label="Loading" className="flex flex-col">
+      {Array.from({ length: rows }, (_, index) => (
+        <div
+          key={index}
+          data-testid="hbar-placeholder-row"
+          className={cn(HBAR_ROW_HEIGHT, 'flex items-center')}
+        >
+          <Skeleton className={cn('h-5 w-full rounded-md', !shown && 'invisible')} />
+        </div>
+      ))}
+    </div>
   );
 }

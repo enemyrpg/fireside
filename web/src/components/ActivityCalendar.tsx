@@ -1,11 +1,14 @@
 import { scrollRegionProps, useScrollsSideways } from '@/hooks/useScrollsSideways';
 import type { CalendarDay } from '@fireside/shared';
 import { useLayoutEffect, useMemo, useRef } from 'react';
+import { Skeleton } from '@/components/ui/skeleton';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { formatDuration, formatInt } from '@/format';
+import { useDelayedFlag } from '@/hooks/useDelayedFlag';
 import { useFormat } from '@/hooks/useFormat';
 import { calendarGrid, daysPlayedLabel } from '@/lib/calendar';
 import { HEAT_STEPS, heatStep } from '@/lib/heat';
+import { cn } from '@/lib/utils';
 
 // Activity calendar for the last year: week columns, Monday first, 14 px
 // squares with 4 px between them on the heat scale. Like the hour heatmap, the
@@ -13,6 +16,11 @@ import { HEAT_STEPS, heatStep } from '@/lib/heat';
 // cell has a tooltip on hover.
 
 const WEEKDAY_LABELS = ['Mon', '', 'Wed', '', 'Fri', '', 'Sun'] as const;
+
+/** The grid's height: the 20 px month row, then 7 rows of 14 px with 4 px between. */
+const CALENDAR_GRID_HEIGHT_PX = 20 + 7 * 14 + 6 * 4;
+
+const LEGEND = 'mt-4 flex items-center justify-center gap-[5px] text-axis text-text-3';
 
 export interface ActivityCalendarProps {
   /** Today's local date: the last day shown. */
@@ -92,10 +100,7 @@ export function ActivityCalendar({ today, days }: ActivityCalendarProps) {
           </div>
         </div>
       </div>
-      <div
-        aria-hidden="true"
-        className="mt-4 flex items-center justify-center gap-[5px] text-axis text-text-3"
-      >
+      <div aria-hidden="true" className={LEGEND}>
         Less
         {Array.from({ length: HEAT_STEPS }, (_, index) => (
           <i
@@ -105,6 +110,29 @@ export function ActivityCalendar({ today, days }: ActivityCalendarProps) {
           />
         ))}
         More
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The calendar's exact space while its days load: the grid and the legend
+ * line, with a skeleton over the grid after 200 ms.
+ */
+export function ActivityCalendarPlaceholder() {
+  const shown = useDelayedFlag(true);
+  return (
+    <div aria-busy="true" aria-label="Loading" data-testid="calendar-placeholder">
+      {/* `pb-1` as the scroll box around the real grid. */}
+      <div className="pb-1">
+        <Skeleton
+          className={cn('mx-auto w-full max-w-[1000px] rounded-md', !shown && 'invisible')}
+          style={{ height: CALENDAR_GRID_HEIGHT_PX }}
+        />
+      </div>
+      <div aria-hidden="true" className={LEGEND}>
+        <i className="inline-block size-3" />
+        {'\u00a0'}
       </div>
     </div>
   );

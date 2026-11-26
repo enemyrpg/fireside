@@ -1,8 +1,10 @@
 import type { AccountScope } from '@fireside/shared';
+import type { ReactNode } from 'react';
 import { Link } from 'react-router';
-import { useBankHistory, useBankSummary } from '@/api/hooks';
+import { useBankHistory, useBankSummary, useHasBankData } from '@/api/hooks';
 import { Card, CardHeader } from '@/components/Card';
-import { LazySparkline } from '@/components/LazySparkline';
+import { LazySparkline, SparklineSkeleton } from '@/components/LazySparkline';
+import { ErrorState, TextSkeleton } from '@/components/states';
 import { TooltipRow } from '@/components/TooltipRow';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { formatAxisDate, formatCompact, formatGp, formatGpExact } from '@/format';
@@ -19,9 +21,14 @@ export const NET_WORTH_SPARKLINE_DAYS = 30;
  * from `bank/summary`), a line of the last 30 days from `bank/history` and the
  * cash. Always GE: at current prices when the server fetches them (`prices`),
  * else at the prices of the snapshot. The line always uses the prices of each
- * day's snapshot. Renders nothing until an account in scope has a bank snapshot
+ * day's snapshot. Renders nothing when no account in scope has a bank snapshot
  * (`updatedAt`), and the numbers without the line when the history can't be
  * loaded or has a single day (one day is a dot, not a trend).
+ *
+ * While the summary loads it takes the card's full height (`NetWorthPlaceholder`),
+ * so Top skills under it doesn't move when it arrives (docs/design.md,
+ * "Loading"). It skips that only when the menu's answer for all accounts
+ * already says no account has bank data.
  */
 export function NetWorthCard({ scope, live }: { scope: AccountScope; live: boolean }) {
   const format = useFormat();
@@ -33,20 +40,28 @@ export function NetWorthCard({ scope, live }: { scope: AccountScope; live: boole
     lastDaysRange(NET_WORTH_SPARKLINE_DAYS, today, format.timeZone),
     { live, enabled: shown },
   );
+  const anyBankData = useHasBankData();
   const data = summary.data;
-  const updatedAt = data?.updatedAt ?? null;
-  if (data === undefined || updatedAt === null) return null;
+  if (data === undefined) {
+    if (anyBankData === false) return null;
+    return summary.isError ? (
+      <NetWorthFrame scope={scope}>
+        <ErrorState onRetry={() => void summary.refetch()} />
+      </NetWorthFrame>
+    ) : (
+      <NetWorthPlaceholder scope={scope} />
+    );
+  }
+  const updatedAt = data.updatedAt;
+  if (updatedAt === null) return null;
   const points = historyPoints(history.data?.days ?? [], 'ge');
   const first = points[0];
   const last = points.at(-1);
+  // The line's place is kept until the history is in; it goes only if that fails or has one day.
+  const historyLoading = history.data === undefined && !history.isError;
 
   return (
-    <Card className="flex flex-col gap-4">
-      <CardHeader
-        title="Net worth"
-        className="mb-0"
-        action={<Link to={bankHref(scope)}>Bank →</Link>}
-      />
+    <NetWorthFrame scope={scope}>
       <div className="flex flex-col gap-0.5">
         <Tooltip>
           <TooltipTrigger asChild>
@@ -78,6 +93,7 @@ export function NetWorthCard({ scope, live }: { scope: AccountScope; live: boole
           GE value · updated {format.date(updatedAt)}, {format.clock(updatedAt)}
         </span>
       </div>
+      {historyLoading && <SparklineSkeleton {...SPARKLINE_PLACEHOLDER} />}
       {points.length > 1 && first && last && (
         <LazySparkline
           variant="area"
@@ -102,6 +118,56 @@ export function NetWorthCard({ scope, live }: { scope: AccountScope; live: boole
           </TooltipContent>
         </Tooltip>
       </div>
+    </NetWorthFrame>
+  );
+}
+
+/** The line's place while the history loads: its size with the labels row under it. */
+const SPARKLINE_PLACEHOLDER = {
+  variant: 'area',
+  points: [],
+  format: String,
+  label: '',
+  startLabel: '\u00a0',
+  endLabel: '\u00a0',
+} as const;
+
+function NetWorthFrame({ scope, children }: { scope: AccountScope; children: ReactNode }) {
+  return (
+    <Card className="flex flex-col gap-4">
+      <CardHeader
+        title="Net worth"
+        className="mb-0"
+        action={<Link to={bankHref(scope)}>Bank →</Link>}
+      />
+      {children}
     </Card>
+  );
+}
+
+/**
+ * The card while its summary loads: the same lines in the same text sizes
+ * (number, "GE value · updated", the line, Cash), with skeletons after 200 ms.
+ */
+function NetWorthPlaceholder({ scope }: { scope: AccountScope }) {
+  return (
+    <NetWorthFrame scope={scope}>
+      <div
+        aria-busy="true"
+        aria-label="Loading"
+        data-testid="net-worth-placeholder"
+        className="contents"
+      >
+        <div className="flex flex-col gap-0.5">
+          <TextSkeleton className="block w-40 self-start font-display text-[36px] leading-[1.05] font-semibold" />
+          <TextSkeleton className="block w-56 text-xs" />
+        </div>
+        <SparklineSkeleton {...SPARKLINE_PLACEHOLDER} />
+        <div className="flex justify-between border-t border-border pt-3">
+          <span className="text-text-2">Cash</span>
+          <TextSkeleton className="inline-block w-16 font-semibold" />
+        </div>
+      </div>
+    </NetWorthFrame>
   );
 }

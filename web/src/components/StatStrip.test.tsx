@@ -32,6 +32,28 @@ describe('StatStrip', () => {
     expect(screen.getByText('Failed')).toBeTruthy();
   });
 
+  it('holds the numbers\u2019 own line sizes while loading, and the loading aside', () => {
+    render(
+      <StatStrip
+        label="Summary"
+        size="hero"
+        items={undefined}
+        aside={<p>Loaded aside</p>}
+        loadingAside={<p>Bars box</p>}
+      />,
+    );
+    const strip = screen.getByRole('region', { name: 'Summary' });
+    const skeletons = within(strip).getAllByTestId('text-skeleton');
+    // A value and a label per number, inside the spans that size the loaded text.
+    expect(skeletons).toHaveLength(8);
+    expect(skeletons[0]?.parentElement?.className).toContain('text-[44px]');
+    expect(skeletons[0]?.parentElement?.className).toContain('desk:text-[56px]');
+    expect(skeletons[2]?.parentElement?.className).toContain('text-[24px]');
+    expect(skeletons[1]?.parentElement?.className).toContain('desk:text-table');
+    expect(within(strip).getByText('Bars box')).toBeTruthy();
+    expect(within(strip).queryByText('Loaded aside')).toBeNull();
+  });
+
   it('shows a unit after the number (only the first on mobile) and an aside', () => {
     render(
       <StatStrip

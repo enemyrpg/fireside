@@ -16,6 +16,7 @@ import summaryNoData from '../../../shared/fixtures/api/bank-summary-response/va
 import summaryFixture from '../../../shared/fixtures/api/bank-summary-response/valid/one-account.json';
 import calendarFixture from '../../../shared/fixtures/api/calendar-response/valid/range.json';
 import feedFixture from '../../../shared/fixtures/api/feed-response/valid/all-types.json';
+import healthFixture from '../../../shared/fixtures/api/health-response/valid/health.json';
 import gainsFixture from '../../../shared/fixtures/api/gains-response/valid/week.json';
 import screentimeFixture from '../../../shared/fixtures/api/screentime-response/valid/by-day.json';
 import detailFixture from '../../../shared/fixtures/api/session-detail-response/valid/session.json';
@@ -814,5 +815,195 @@ describe('Home', () => {
     renderApp('/all');
     await screen.findByRole('heading', { level: 2, name: /^Welcome to / });
     expect(screen.queryByRole('button', { name: /^Choose account/ })).toBeNull();
+  });
+});
+
+describe('Home while it loads', () => {
+  /** An answer that waits until the test sends it. */
+  function held() {
+    let send: (response: Response) => void = () => undefined;
+    const promise = new Promise<Response>((resolve) => {
+      send = resolve;
+    });
+    return {
+      answer: () => promise,
+      send: (response: Response) => {
+        send(response);
+      },
+    };
+  }
+  const never = () => new Promise<Response>(() => undefined);
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-11T12:00:00Z'));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /**
+   * Every part of Home waits. On an account the menu knows some account has
+   * bank data; on `all` the account list waits too (an account's Home waits
+   * for it before it renders).
+   */
+  function mockAllWaiting(scope: string, answers: Record<string, MockAnswer> = {}) {
+    return mockOverview(scope, {
+      answers: {
+        ...(scope === 'all' ? { '/api/v1/accounts': never } : {}),
+        [`/api/v1/accounts/${scope}/sessions`]: never,
+        [`/api/v1/accounts/${scope}/weekly`]: never,
+        [`/api/v1/accounts/${scope}/gains`]: never,
+        [`/api/v1/accounts/${scope}/feed`]: never,
+        [`/api/v1/accounts/${scope}/calendar`]: never,
+        // On `all` the card and the menu ask the same question, which waits.
+        ...(scope === 'all'
+          ? {}
+          : { '/api/v1/accounts/all/bank/summary': { body: summaryFixture } }),
+        [`/api/v1/accounts/${scope}/bank/summary`]: never,
+        ...answers,
+      },
+    });
+  }
+
+  it('gives every card its final size from the first frame, with skeletons after 200 ms', async () => {
+    stubDesktop();
+    mockAllWaiting('all');
+    renderApp('/all');
+
+    // This week: the online line and the week keep their text lines' height.
+    const week = within(await strip());
+    const lines = week.getAllByTestId('text-skeleton').slice(0, 2);
+    expect(lines[0]?.className).toContain('text-table');
+    expect(lines[1]?.className).toContain('text-xs');
+    expect(lines[1]?.className).toContain('desk:text-table');
+    // The numbers are busy, and the day bars' box is there before them.
+    const numbers = await screen.findByRole('region', { name: 'This week’s numbers' });
+    expect(numbers.getAttribute('aria-busy')).toBe('true');
+    expect(within(numbers).getByTestId('week-day-bars-placeholder').className).toContain(
+      'h-[84px]',
+    );
+
+    // Latest: six rows of the loaded rows' size, under one day.
+    const rows = (await latest()).getAllByTestId('latest-placeholder-row');
+    expect(rows).toHaveLength(6);
+    for (const row of rows) {
+      expect(row.firstElementChild?.className).toContain('min-h-14');
+      expect(row.firstElementChild?.className).toContain('desk:py-3.5');
+    }
+
+    // Top skills: three rows of the list's row height.
+    const skills = (await card('Top skills this week')).getAllByTestId('hbar-placeholder-row');
+    expect(skills).toHaveLength(3);
+    for (const row of skills) expect(row.className).toContain('h-[30px]');
+
+    // Activity: the grid's exact height.
+    const calendar = (await card('Activity')).getByTestId('calendar-placeholder');
+    expect(calendar.querySelector<HTMLElement>('[data-slot="skeleton"]')?.style.height).toBe(
+      '142px',
+    );
+
+    // Net worth: its lines and the line chart's place, not nothing.
+    const worth = await card('Net worth');
+    expect(worth.getByTestId('net-worth-placeholder')).toBeTruthy();
+    expect(worth.getByTestId('sparkline-skeleton').style.height).toBe('64px');
+
+    // Nothing drawn before 200 ms; then the skeletons fill the boxes.
+    await waitFor(() => {
+      expect(
+        rows[0]?.querySelector('[data-slot="skeleton"]')?.className.includes('invisible'),
+      ).toBe(false);
+    });
+  });
+
+  it('keeps one row of chips for all accounts while the accounts load', async () => {
+    mockAllWaiting('all');
+    renderApp('/all');
+    const week = within(await strip());
+    expect(week.getAllByTestId('account-chip-placeholder')[0]?.className).toContain(
+      'max-desk:min-h-11',
+    );
+  });
+
+  it('keeps the day bars’ box while the play time per day loads', async () => {
+    mockOverview('1', { answers: { '/api/v1/accounts/1/screentime': never } });
+    renderApp('/1');
+    const week = within(await strip());
+    expect(await week.findByText('10 h')).toBeTruthy();
+    expect(week.getByTestId('week-day-bars-placeholder').className).toContain('h-12 w-24');
+    expect(week.queryAllByTestId('week-day-bar')).toEqual([]);
+  });
+
+  it('keeps the net worth’s place while it loads and collapses only without bank data', async () => {
+    const summary = held();
+    mockAllWaiting('1', { '/api/v1/accounts/1/bank/summary': summary.answer });
+    renderApp('/1');
+    const worth = await card('Net worth');
+    expect(worth.getByTestId('net-worth-placeholder')).toBeTruthy();
+
+    summary.send(json(summaryNoData));
+    await waitFor(() => {
+      expect(screen.queryByRole('heading', { name: 'Net worth' })).toBeNull();
+    });
+  });
+
+  it('shows no net worth place when no account has bank data at all', async () => {
+    mockAllWaiting('1', {
+      '/api/v1/accounts/all/bank/summary': { body: summaryNoData },
+    });
+    renderApp('/1');
+    await card('Top skills this week');
+    // Let the menu's answer arrive.
+    await waitFor(() => {
+      expect(screen.queryByRole('heading', { name: 'Net worth' })).toBeNull();
+    });
+    expect(screen.queryByTestId('net-worth-placeholder')).toBeNull();
+  });
+
+  it('keeps the line’s place while the net worth history loads', async () => {
+    const history = held();
+    mockOverview('1', {
+      answers: {
+        '/api/v1/accounts/1/bank/summary': { body: summaryFixture },
+        '/api/v1/accounts/1/bank/history': history.answer,
+      },
+    });
+    renderApp('/1');
+    const worth = await card('Net worth');
+    expect(await worth.findByText('1.48B')).toBeTruthy();
+    expect(worth.getByTestId('sparkline-skeleton').style.height).toBe('64px');
+
+    history.send(json(historyFixture));
+    expect(await worth.findByRole('img')).toBeTruthy();
+  });
+
+  it('shows the net worth card with Retry when its summary fails', async () => {
+    const fetchMock = mockOverview('1', {
+      answers: {
+        '/api/v1/accounts/all/bank/summary': { body: summaryFixture },
+        '/api/v1/accounts/1/bank/summary': SERVER_ERROR,
+      },
+    });
+    renderApp('/1');
+    await screen.findByText("Couldn't load this.");
+    const worth = await card('Net worth');
+    const before = requests(fetchMock, '/api/v1/accounts/1/bank/summary').length;
+    await userEvent.click(worth.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => {
+      expect(requests(fetchMock, '/api/v1/accounts/1/bank/summary').length).toBe(before + 1);
+    });
+  });
+
+  it('keeps the footer below the fold while the page waits for the server', async () => {
+    const health = held();
+    mockApi({ '/api/v1/health': health.answer });
+    renderApp('/1');
+    const main = await screen.findByRole('main');
+    expect(main.className).toContain('min-h-svh');
+
+    health.send(json(healthFixture));
+    await waitFor(() => {
+      expect(main.className).not.toContain('min-h-svh');
+    });
   });
 });

@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { Skeleton } from '@/components/ui/skeleton';
+import { TextSkeleton } from '@/components/states';
 import { cn } from '@/lib/utils';
 
 // The row of big numbers at the top of a page. Straight on the page background,
@@ -33,12 +33,14 @@ export function StatStrip({
   skeletonCount = 4,
   size = 'page',
   aside,
+  loadingAside,
   trailing,
   beside,
+  loadingBeside,
   mobileColumns = 3,
   className,
 }: {
-  /** `undefined` while loading: skeletons in the same place. */
+  /** `undefined` while loading: placeholders of the same size in the same place. */
   items: readonly StatStripItem[] | undefined;
   /** Accessible name of the row, e.g. "Screen time summary". */
   label: string;
@@ -63,6 +65,11 @@ export function StatStrip({
    */
   aside?: ReactNode;
   /**
+   * In `aside`'s place while the numbers load: a box of its final size (Home's
+   * day bars), so nothing moves when they arrive.
+   */
+  loadingAside?: ReactNode;
+  /**
    * Right after the numbers on PC (not pushed to the far right like `aside`),
    * full width under them on mobile: the collection log's progress bar.
    */
@@ -73,13 +80,14 @@ export function StatStrip({
    * the two (`useIsDesktop`), not both.
    */
   beside?: ReactNode;
+  /** In `beside`'s place while the numbers load, like `loadingAside`. */
+  loadingBeside?: ReactNode;
   /** Columns of the small numbers on mobile. Default 3. */
   mobileColumns?: 2 | 3;
   className?: string;
 }) {
   const pane = size === 'pane';
   const hero = size === 'hero';
-  const hasBeside = beside !== undefined && beside !== null && beside !== false;
   if (error !== undefined && error !== null && error !== false) {
     return (
       <section aria-label={label} className={cn(ROW, 'block desk:block', className)}>
@@ -87,23 +95,25 @@ export function StatStrip({
       </section>
     );
   }
-  if (items === undefined) {
-    return (
-      <section aria-label={label} aria-busy="true" className={cn(ROW, className)}>
-        {Array.from({ length: skeletonCount }, (_, index) => (
-          <div key={index} className={cn('flex flex-col gap-2', index === 0 && 'col-span-full')}>
-            <Skeleton
-              className={cn('h-[22px] w-20 desk:h-12 desk:w-40', index === 0 && 'h-11 w-48')}
-            />
-            <Skeleton className="h-3 w-24 desk:w-32" />
-          </div>
-        ))}
-      </section>
-    );
-  }
+  const loading = items === undefined;
+  // While loading: the same numbers and labels as text placeholders, so the strip
+  // has its final height from the first frame (docs/design.md, "Loading").
+  const shown: readonly StatStripItem[] =
+    items ??
+    Array.from({ length: skeletonCount }, (_, index) => ({
+      key: `skeleton-${String(index)}`,
+      value: (
+        <TextSkeleton className={cn('inline-block', index === 0 ? 'w-48' : 'w-20 desk:w-40')} />
+      ),
+      label: <TextSkeleton className="inline-block w-24 desk:w-32" />,
+    }));
+  const showBeside = loading ? loadingBeside : beside;
+  const showAside = loading ? loadingAside : aside;
+  const hasBeside = showBeside !== undefined && showBeside !== null && showBeside !== false;
   return (
     <section
       aria-label={label}
+      {...(loading ? { 'aria-busy': true } : {})}
       className={cn(
         ROW,
         mobileColumns === 2 && 'grid-cols-2',
@@ -112,7 +122,7 @@ export function StatStrip({
         className,
       )}
     >
-      {items.map((item, index) => {
+      {shown.map((item, index) => {
         const first = index === 0;
         const number = (
           <div
@@ -173,16 +183,16 @@ export function StatStrip({
             className="col-span-full flex items-end justify-between gap-3 desk:contents"
           >
             {number}
-            <div className="flex-none desk:hidden">{beside}</div>
+            <div className="flex-none desk:hidden">{showBeside}</div>
           </div>
         );
       })}
-      {trailing !== undefined && trailing !== null && trailing !== false && (
+      {!loading && trailing !== undefined && trailing !== null && trailing !== false && (
         <div className="col-span-full min-w-0 desk:max-w-80 desk:flex-[1_1_200px] desk:self-end desk:pb-1.5">
           {trailing}
         </div>
       )}
-      {aside !== undefined && aside !== null && aside !== false && (
+      {showAside !== undefined && showAside !== null && showAside !== false && (
         <div
           data-slot="stat-strip-aside"
           className={cn(
@@ -193,7 +203,7 @@ export function StatStrip({
             hero && 'desk:max-w-[340px] desk:flex-[1_1_240px]',
           )}
         >
-          {aside}
+          {showAside}
         </div>
       )}
     </section>
