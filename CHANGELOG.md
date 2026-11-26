@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.1](https://github.com/enemyrpg/fireside/compare/v0.2.0...v0.2.1) (2026-11-26)
+
+
+### Bug fixes
+
+* cache icons privately and skip the placeholder for loaded icons ([#39](https://github.com/enemyrpg/fireside/issues/39)) ([5dbb216](https://github.com/enemyrpg/fireside/commit/5dbb216d6a62c68c4bc2ec0eae491c62c1855b3b))
+
+
+### Performance
+
+* **web:** split the dashboard bundle by route ([#34](https://github.com/enemyrpg/fireside/issues/34)) ([0e01255](https://github.com/enemyrpg/fireside/commit/0e01255e23ea2ca06301186d44893b582445fa86))
+
 ## [0.2.0](https://github.com/enemyrpg/fireside/compare/v0.1.2...v0.2.0) (2026-11-24)
 
 
