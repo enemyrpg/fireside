@@ -311,7 +311,7 @@ All off by default. Nothing is called until both the feature and
 | Variable              | Default | Values                                | Meaning                                                                                                                                                      |
 | --------------------- | ------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `USER_AGENT_CONTACT`  | unset   | an email address or URL, no spaces    | Contact for whoever runs this instance, sent as `Fireside/<version> (+<contact>)` in the User-Agent of every external call. Required for any external source |
-| `PRICES_ENABLED`      | `false` | `true`, `false`                       | Fetch current Grand Exchange prices from the OSRS Wiki, at most once an hour                                                                                 |
+| `PRICES_ENABLED`      | `false` | `true`, `false`                       | Fetch current Grand Exchange prices from the OSRS Wiki, when needed: at most once an hour, about 6 times a day when idle                                     |
 | `RUNEPROFILE_ENABLED` | `false` | `true`, `false`                       | Fetch the collection log from RuneProfile for the accounts each owner turns it on for                                                                        |
 | `RUNEPROFILE_API_KEY` | unset   | printable ASCII, up to 200 characters | Optional RuneProfile API key (ask in the RuneProfile Discord). Not needed. Keep it secret                                                                    |
 
@@ -792,8 +792,12 @@ PRICES_ENABLED=true
 
 - **`PRICES_ENABLED`** fetches current Grand Exchange prices from the
   [OSRS Wiki](https://oldschool.runescape.wiki/w/RuneScape:Real-time_Prices):
-  one request for all items, at most once an hour. The bank and the net worth
-  are then valued at current prices. Bank history, loot and raid drops keep
+  one request for all items, only when they are needed. It fetches when the
+  bank, the net worth, Price movers or potion storage are opened, or while an
+  account is logged in, at most once an hour, and every 3 h 55 min otherwise
+  so Price movers have history: about 6 calls a day when nobody plays, never
+  more than 24. A page never waits for it: it shows the stored prices and their
+  time. The bank and the net worth are then valued at current prices. Bank history, loot and raid drops keep
   the prices from when they happened. Items the wiki has no price for keep the
   price the plugin recorded. If a fetch fails, the last prices are kept.
 - **`RUNEPROFILE_ENABLED`** fetches the collection log from

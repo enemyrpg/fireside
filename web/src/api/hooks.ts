@@ -6,6 +6,7 @@ import type {
   ExternalSourcesResponse,
   IconsStatusResponse,
   BankHistoryResponse,
+  BankPrices,
   BankResponse,
   BankSummaryResponse,
   Bucket,
@@ -56,6 +57,7 @@ import {
   useQueryClient,
   type InfiniteData,
 } from '@tanstack/react-query';
+import { useEffect, useRef } from 'react';
 import { apiGet, apiSend } from './client';
 import { isImportingIcons } from '@/lib/icons';
 import { hasLiveSession } from '@/lib/overview';
@@ -613,6 +615,47 @@ export function usePriceMovers(scope: AccountScope, { enabled }: { enabled: bool
         { signal },
       ),
   });
+}
+
+/** Current prices older than this start a fetch on the server when they are read. */
+export const STALE_PRICES_MS = 60 * 60 * 1000;
+/** How long after a stale answer the bank-price queries are asked again. */
+export const STALE_PRICES_REFETCH_MS = 5_000;
+/** Every query valued at the latest prices: refetched together, so they agree. */
+const BANK_PRICE_QUERIES = ['bank', 'bank-summary', 'price-movers', 'potion-storage'] as const;
+
+/**
+ * A read of current prices over an hour old makes the server fetch new ones
+ * in the background while it answers with the old ones (see
+ * docs/decisions/0019-prices-fetched-on-demand.md). The bank queries never
+ * poll, so a few seconds after such an answer this asks all four bank-price
+ * queries of `scope` again, once: they then show the same, new prices. At
+ * most once per scope and price fetch while the component stays mounted (a
+ * page visit), so it never loops: if the prices are still old afterwards (the
+ * fetch failed or is slow), they are left as they are. Never with snapshot
+ * prices (prices off, or no fetch yet).
+ */
+export function useRefreshStalePrices(scope: AccountScope, prices: BankPrices | undefined) {
+  const queryClient = useQueryClient();
+  const asked = useRef(new Set<string>());
+  const fetchedAt = prices?.source === 'CURRENT' ? prices.fetchedAt : null;
+  useEffect(() => {
+    if (fetchedAt === null) return;
+    const age = Date.now() - Date.parse(fetchedAt);
+    if (!(age >= STALE_PRICES_MS)) return;
+    const key = `${String(scope)} ${fetchedAt}`;
+    if (asked.current.has(key)) return;
+    const timer = setTimeout(() => {
+      asked.current.add(key);
+      for (const name of BANK_PRICE_QUERIES) {
+        // Cached ones that are not on screen too, so none keeps the old prices.
+        void queryClient.invalidateQueries({ queryKey: [name, scope], refetchType: 'all' });
+      }
+    }, STALE_PRICES_REFETCH_MS);
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [queryClient, scope, fetchedAt]);
 }
 
 /** `GET …/bank/history`: net worth per local day. Without a range: a rolling year. */

@@ -784,7 +784,7 @@ describe('Server', () => {
     const card = await sourcesCard();
     expect(row(card, 'OSRS Wiki Prices')).toMatch(/Off \(PRICES_ENABLED\)$/);
     expect(row(card, 'Last fetch')).toMatch(/None yet$/);
-    expect(within(card).queryByText('Next fetch')).toBeNull();
+    expect(within(card).queryByText('Earliest next fetch')).toBeNull();
     expect(within(card).queryByRole('alert')).toBeNull();
   });
 
@@ -801,7 +801,7 @@ describe('Server', () => {
     const card = await sourcesCard();
     expect(row(card, 'OSRS Wiki Prices')).toMatch(/On$/);
     expect(row(card, 'Last fetch')).toMatch(/8 Nov( 2026)?, 20:00$/);
-    expect(row(card, 'Next fetch')).toMatch(/8 Nov( 2026)?, 21:00$/);
+    expect(row(card, 'Earliest next fetch')).toMatch(/8 Nov( 2026)?, 21:00$/);
     expect(within(card).queryByRole('alert')).toBeNull();
   });
 

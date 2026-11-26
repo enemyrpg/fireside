@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Database } from '../db/index.js';
 import { itemPriceHistory, itemPrices } from '../db/schema.js';
+import { PRICES_HISTORY_INTERVAL_MS } from '../jobs/prices.js';
 import { testDatabase } from '../test-utils.js';
-import { storePrices } from './fetch.js';
+import { PRICES_INTERVAL_MS, storePrices } from './fetch.js';
 import {
   baselineFetch,
   PRICE_HISTORY_DAILY_FETCHES,
@@ -18,7 +19,8 @@ import {
 // assume one fetch an hour: the tests feed fetches at irregular times
 // (on-demand fetching) and with a wrong clock.
 
-const HOUR = 3_600_000;
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 const at = (iso: string) => new Date(iso);
 
@@ -273,8 +275,8 @@ describe('price history', () => {
     database?.close();
     const u = setup();
     for (const iso of [
-      '2026-10-21T20:00:00.000Z', // 30 d 16 h ago: within 22 h before 30 days
-      '2026-11-13T00:10:00.000Z', // 8 d 12 h ago: more than 22 h before 7 days (the 14th is missing)
+      '2026-10-21T20:00:00.000Z', // 30 d 16 h ago: within 26 h before 30 days
+      '2026-11-13T00:10:00.000Z', // 8 d 12 h ago: more than 26 h before 7 days (the 14th is missing)
       '2026-11-20T15:30:00.000Z', // 20 h 30 min ago: more than 2 h after 24 hours
       '2026-11-21T05:00:00.000Z',
       now,
@@ -292,13 +294,13 @@ describe('price history', () => {
     ]);
   });
 
-  it('reaches 22 hours back from the target but only 2 hours forward, never to the current fetch', () => {
+  it('reaches 26 hours back from the target but only 2 hours forward, never to the current fetch', () => {
     const t = setup();
     t.fetch('2026-11-14T02:00:00.000Z');
     t.fetch('2026-11-15T00:30:00.000Z');
     t.fetch('2026-11-21T12:00:00.000Z');
     const reach = PRICE_MOVER_WINDOWS['7d'];
-    expect(reach).toMatchObject({ earlierMs: 22 * HOUR, laterMs: 2 * HOUR });
+    expect(reach).toMatchObject({ earlierMs: 26 * HOUR, laterMs: 2 * HOUR });
     const current = '2026-11-21T12:00:00.000Z';
     const target = Date.parse('2026-11-14T12:00:00.000Z');
     // 10 h before the target; the one 12 h 30 min after it is out of reach.
@@ -307,9 +309,13 @@ describe('price history', () => {
     expect(baselineFetch(t.db, target + 11 * HOUR, reach, current)).toBe(
       '2026-11-15T00:30:00.000Z',
     );
-    // 3 h after the target, or 22 h 30 min before it: neither.
+    // 25 h before: still in reach.
+    expect(baselineFetch(t.db, Date.parse('2026-11-16T01:30:00.000Z'), reach, current)).toBe(
+      '2026-11-15T00:30:00.000Z',
+    );
+    // 3 h after the target, or 26 h 30 min before it: neither.
     expect(baselineFetch(t.db, Date.parse('2026-11-13T23:00:00.000Z'), reach, current)).toBeNull();
-    expect(baselineFetch(t.db, Date.parse('2026-11-15T23:00:00.000Z'), reach, current)).toBeNull();
+    expect(baselineFetch(t.db, Date.parse('2026-11-16T03:00:00.000Z'), reach, current)).toBeNull();
     // The current fetch is never its own baseline, however near.
     expect(baselineFetch(t.db, Date.parse(current) - HOUR, reach, current)).toBeNull();
   });
@@ -356,5 +362,83 @@ describe('price history', () => {
         current,
       ).toEqual(['24h', '7d', '30d']);
     }
+  });
+  /**
+   * 40 days as the price job fetches (jobs/prices.ts), checked every minute: on
+   * a read when the last fetch is an hour old, and with `historyMs`, whenever
+   * the last fetch is that old. Reads come at random times, 0–6 a day.
+   * Returns the time of each whole hour from day 32 on (30 days and the 26 hours before them exist) with the periods shown
+   * then, counted from the newest fetch.
+   */
+  function simulate(historyMs: number | null) {
+    const t = setup();
+    const start = Date.parse('2026-10-01T00:00:00.000Z');
+    let seed = 13;
+    const random = () => (seed = (seed * 1_103_515_245 + 12_345) % 2 ** 31) / 2 ** 31;
+    const reads = new Set<number>();
+    for (let day = 0; day < 40; day++) {
+      const count = Math.floor(random() * 7);
+      for (let i = 0; i < count; i++) {
+        reads.add(start + day * DAY + Math.floor(random() * 24 * 60) * MINUTE);
+      }
+    }
+    let last = -Infinity;
+    const checks: { at: number; current: number; periods: ReturnType<typeof priceBaselines> }[] =
+      [];
+    for (let ms = start; ms < start + 40 * DAY; ms += MINUTE) {
+      const since = ms - last;
+      if (
+        (historyMs !== null && since >= historyMs) ||
+        (reads.has(ms) && since >= PRICES_INTERVAL_MS)
+      ) {
+        t.fetch(new Date(ms).toISOString());
+        last = ms;
+      }
+      if (ms >= start + 32 * DAY && ms % HOUR === 0) {
+        checks.push({
+          at: ms,
+          current: last,
+          periods: priceBaselines(t.db, new Date(last).toISOString()),
+        });
+      }
+    }
+    return checks;
+  }
+
+  /** Every baseline is within its period's reach of the time it stands for. */
+  function expectInReach(checks: ReturnType<typeof simulate>) {
+    for (const { current, periods } of checks) {
+      for (const { period, baselineAt } of periods) {
+        const { agoMs, earlierMs, laterMs } = PRICE_MOVER_WINDOWS[period];
+        const offset = Date.parse(baselineAt) - (current - agoMs);
+        expect(offset, `${period} at ${new Date(current).toISOString()}`).toBeGreaterThanOrEqual(
+          -earlierMs,
+        );
+        expect(offset, `${period} at ${new Date(current).toISOString()}`).toBeLessThanOrEqual(
+          laterMs,
+        );
+      }
+    }
+  }
+
+  it('shows 24 hours, 7 days and 30 days at every hour with on-demand fetches and the history fetch', () => {
+    const checks = simulate(PRICES_HISTORY_INTERVAL_MS);
+    expect(checks).toHaveLength(8 * 24);
+    for (const { at, periods } of checks) {
+      expect(
+        periods.map(({ period }) => period),
+        new Date(at).toISOString(),
+      ).toEqual(['24h', '7d', '30d']);
+    }
+    expectInReach(checks);
+  });
+
+  it('leaves periods out without the history fetch, but never compares with a fetch out of reach', () => {
+    const checks = simulate(null);
+    const shown = (period: string) =>
+      checks.filter(({ periods }) => periods.some((baseline) => baseline.period === period)).length;
+    // Reads alone rarely fall a day apart within two hours.
+    expect(shown('24h')).toBeLessThan(checks.length / 2);
+    expectInReach(checks);
   });
 });

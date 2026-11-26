@@ -7,7 +7,13 @@ import type {
 } from '@fireside/shared';
 import { useMemo, useState, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router';
-import { useAccounts, useBank, usePotionStorage, usePriceMovers } from '@/api/hooks';
+import {
+  useAccounts,
+  useBank,
+  usePotionStorage,
+  usePriceMovers,
+  useRefreshStalePrices,
+} from '@/api/hooks';
 import { AccountCards, type AccountCard } from '@/components/AccountCards';
 import { Card } from '@/components/Card';
 import { TooltipRow as Row } from '@/components/TooltipRow';
@@ -648,6 +654,8 @@ export function BankPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const bank = useBank(scope);
   const potions = usePotionStorage(scope);
+  // Old current prices: asked again once the server has fetched new ones.
+  useRefreshStalePrices(scope, bank.data?.prices);
 
   const mode = parseValueMode(searchParams.get('value'));
   // Missing or invalid: one year.

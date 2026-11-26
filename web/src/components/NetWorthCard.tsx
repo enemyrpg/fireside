@@ -1,7 +1,7 @@
 import type { AccountScope } from '@fireside/shared';
 import type { ReactNode } from 'react';
 import { Link } from 'react-router';
-import { useBankHistory, useBankSummary, useHasBankData } from '@/api/hooks';
+import { useBankHistory, useBankSummary, useHasBankData, useRefreshStalePrices } from '@/api/hooks';
 import { Card, CardHeader } from '@/components/Card';
 import { LazySparkline, SparklineSkeleton } from '@/components/LazySparkline';
 import { ErrorState, TextSkeleton } from '@/components/states';
@@ -34,6 +34,8 @@ export function NetWorthCard({ scope, live }: { scope: AccountScope; live: boole
   const format = useFormat();
   const today = useLocalToday(format.timeZone);
   const summary = useBankSummary(scope, { live });
+  // Old current prices: asked again once the server has fetched new ones.
+  useRefreshStalePrices(scope, summary.data?.prices);
   const shown = summary.data !== undefined && summary.data.updatedAt !== null;
   const history = useBankHistory(
     scope,

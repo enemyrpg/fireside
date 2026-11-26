@@ -36,13 +36,25 @@ export interface BankRoutesOptions {
    * `USER_AGENT_CONTACT`). Off: the snapshot's own prices.
    */
   currentPrices?: boolean;
+  /**
+   * Called before the latest snapshots are valued at current prices, so the
+   * price job can start a fetch when they are old (jobs/prices.ts). The
+   * answer never waits for it: it has the stored prices.
+   */
+  onPricesRead?: () => void;
 }
 
 export const bankRoutes: FastifyPluginCallback<BankRoutesOptions> = (
   app,
-  { timeZone, now = systemClock, currentPrices: useCurrent = false },
+  { timeZone, now = systemClock, currentPrices: useCurrent = false, onPricesRead },
   done,
 ) => {
+  /** The stored prices for this read. The history uses snapshot prices and never asks. */
+  const prices = () => {
+    if (useCurrent) onPricesRead?.();
+    return currentPrices(app.db, useCurrent);
+  };
+
   /** Account IDs for the request; rejects unknown query parameters. */
   const accountsOf = (request: FastifyRequest): number[] => {
     const { accountId } = parseRequest(accountScopeParamsSchema, request.params, 'params');
@@ -51,20 +63,20 @@ export const bankRoutes: FastifyPluginCallback<BankRoutesOptions> = (
   };
 
   app.get('/accounts/:accountId/bank', USER_ROUTE, (request): BankResponse =>
-    bank(app.db, accountsOf(request), currentPrices(app.db, useCurrent)),
+    bank(app.db, accountsOf(request), prices()),
   );
 
   app.get('/accounts/:accountId/bank/summary', USER_ROUTE, (request): BankSummaryResponse =>
-    bankSummary(app.db, accountsOf(request), currentPrices(app.db, useCurrent)),
+    bankSummary(app.db, accountsOf(request), prices()),
   );
 
   // Price movers. Empty when prices are off: the same lookup as the three above.
   app.get('/accounts/:accountId/bank/price-movers', USER_ROUTE, (request): PriceMoversResponse =>
-    priceMovers(app.db, accountsOf(request), currentPrices(app.db, useCurrent)),
+    priceMovers(app.db, accountsOf(request), prices()),
   );
 
   app.get('/accounts/:accountId/potion-storage', USER_ROUTE, (request): PotionStorageResponse =>
-    potionStorage(app.db, accountsOf(request), currentPrices(app.db, useCurrent)),
+    potionStorage(app.db, accountsOf(request), prices()),
   );
 
   app.get('/accounts/:accountId/bank/history', USER_ROUTE, (request): BankHistoryResponse => {

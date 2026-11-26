@@ -192,7 +192,7 @@ function ExternalSources() {
             </span>
           </InfoRow>
           {source.nextFetchAt && (
-            <InfoRow label="Next fetch">
+            <InfoRow label="Earliest next fetch">
               <span className="text-right">{format.dateTime(source.nextFetchAt)}</span>
             </InfoRow>
           )}

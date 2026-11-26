@@ -21,6 +21,7 @@ import moversNothing from '../../../shared/fixtures/api/price-movers-response/va
 import moversNone from '../../../shared/fixtures/api/price-movers-response/valid/no-history-yet.json';
 import moversDay from '../../../shared/fixtures/api/price-movers-response/valid/only-24h.json';
 import moversThree from '../../../shared/fixtures/api/price-movers-response/valid/three-periods.json';
+import { STALE_PRICES_REFETCH_MS } from '@/api/hooks';
 import {
   findMainNav,
   mockApi,
@@ -1153,5 +1154,145 @@ describe('Bank in the menu', () => {
     const link = await within(nav).findByRole('link', { name: 'Bank' });
     expect(link.getAttribute('aria-current')).toBe('page');
     expect(link.getAttribute('href')).toBe('/1/bank');
+  });
+});
+
+// Current prices over an hour old: the server fetches new ones in the
+// background while it answers with the old ones, and the page asks again once
+// (useRefreshStalePrices). Price movers only exist for one account.
+describe('Stale current prices', () => {
+  const NOW = '2026-11-21T12:30:00.000Z';
+  const STALE = '2026-11-21T10:00:04.000Z';
+  const FRESH = '2026-11-21T12:30:02.000Z';
+  const PATHS = {
+    bank: '/api/v1/accounts/1/bank',
+    summary: '/api/v1/accounts/1/bank/summary',
+    movers: '/api/v1/accounts/1/bank/price-movers',
+    potions: '/api/v1/accounts/1/potion-storage',
+  };
+  const BODIES: Record<keyof typeof PATHS, object> = {
+    bank: bankOne,
+    summary: summaryOne,
+    movers: moversThree,
+    potions: potionsOne,
+  };
+
+  beforeEach(() => {
+    // Real time goes on (React Query's own timers), and the refetch delay can be skipped.
+    vi.useFakeTimers({
+      toFake: ['Date', 'setTimeout', 'clearTimeout'],
+      shouldAdvanceTime: true,
+    });
+    vi.setSystemTime(new Date(NOW));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /**
+   * Every bank-price answer of account 1 at the prices of `first` on the first
+   * request and of `later` after that. `SNAPSHOT`: prices off.
+   */
+  function mockPrices(
+    first: string,
+    later: string,
+    source: 'CURRENT' | 'SNAPSHOT' = 'CURRENT',
+    more: Record<string, MockAnswer> = {},
+  ) {
+    const asked = new Map<string, number>();
+    const answers: Record<string, MockAnswer> = { ...more };
+    for (const [name, path] of Object.entries(PATHS) as [keyof typeof PATHS, string][]) {
+      answers[path] = () => {
+        const n = (asked.get(path) ?? 0) + 1;
+        asked.set(path, n);
+        const fetchedAt = source === 'SNAPSHOT' ? null : n === 1 ? first : later;
+        const body =
+          name === 'movers' && source === 'SNAPSHOT'
+            ? { prices: { source, fetchedAt }, periods: [] }
+            : { ...BODIES[name], prices: { source, fetchedAt } };
+        return new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      };
+    }
+    const fetchMock = mockBank('1', { answers });
+    const count = (path: string) => requests(fetchMock, path).length;
+    return { count };
+  }
+
+  /** The `prices.fetchedAt` each bank-price query of account 1 holds now. */
+  function cached(queryClient: ReturnType<typeof renderApp>['queryClient']) {
+    return ['bank', 'bank-summary', 'price-movers', 'potion-storage'].map(
+      (name) =>
+        queryClient.getQueryData<{ prices: { fetchedAt: string | null } }>([name, 1])?.prices
+          .fetchedAt,
+    );
+  }
+
+  /** Lets the refetch delay pass, and the answers to it arrive. */
+  async function afterDelay() {
+    await act(() => vi.advanceTimersByTimeAsync(STALE_PRICES_REFETCH_MS));
+  }
+
+  it('asks every bank-price query again once, and they all show the new prices', async () => {
+    stubDesktop();
+    const t = mockPrices(STALE, FRESH);
+    // Home first (the net worth card asks for the summary), then Bank.
+    const { router, queryClient } = renderApp('/1');
+    await waitFor(() => {
+      expect(t.count(PATHS.summary)).toBe(1);
+    });
+    await act(() => router.navigate('/1/bank'));
+    await card('Price movers');
+    expect(cached(queryClient)).toEqual([STALE, STALE, STALE, STALE]);
+    await afterDelay();
+    await waitFor(() => {
+      expect(cached(queryClient)).toEqual([FRESH, FRESH, FRESH, FRESH]);
+    });
+    for (const path of Object.values(PATHS)) expect(t.count(path), path).toBe(2);
+    // Fresh now: nothing more.
+    for (let i = 0; i < 3; i++) await afterDelay();
+    for (const path of Object.values(PATHS)) expect(t.count(path), path).toBe(2);
+  });
+
+  it('asks only once when the prices are still old afterwards, also after switching account', async () => {
+    stubDesktop();
+    const t = mockPrices(STALE, STALE, 'CURRENT', {
+      '/api/v1/accounts/2/bank': { body: bankNoData },
+      '/api/v1/accounts/2/potion-storage': { body: potionsNoData },
+      '/api/v1/accounts/2/bank/history': { body: historyFixture },
+    });
+    const { router, queryClient } = renderApp('/1/bank');
+    await card('Price movers');
+    await afterDelay();
+    await waitFor(() => {
+      expect(t.count(PATHS.bank)).toBe(2);
+    });
+    for (let i = 0; i < 5; i++) await afterDelay();
+    expect(t.count(PATHS.bank)).toBe(2);
+    expect(t.count(PATHS.potions)).toBe(2);
+    expect(t.count(PATHS.movers)).toBe(2);
+    expect(cached(queryClient).filter((at) => at !== undefined)).toEqual([STALE, STALE, STALE]);
+
+    // Another account and back, on the same page visit: the same old prices are not asked for again.
+    await act(() => router.navigate('/2/bank'));
+    await act(() => router.navigate('/1/bank'));
+    await card('Price movers');
+    const back = t.count(PATHS.bank);
+    for (let i = 0; i < 5; i++) await afterDelay();
+    expect(t.count(PATHS.bank)).toBe(back);
+  });
+
+  it('never asks again with snapshot prices (prices off)', async () => {
+    stubDesktop();
+    const t = mockPrices(STALE, FRESH, 'SNAPSHOT');
+    renderApp('/1/bank');
+    await screen.findByRole('radio', { name: 'GE' });
+    for (let i = 0; i < 5; i++) await afterDelay();
+    expect(t.count(PATHS.bank)).toBe(1);
+    expect(t.count(PATHS.potions)).toBe(1);
+    // The page never asks for price movers without current prices.
+    expect(t.count(PATHS.movers)).toBe(0);
   });
 });
