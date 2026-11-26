@@ -994,6 +994,27 @@ describe('Home while it loads', () => {
     });
   });
 
+  it.each([
+    ['failed too', SERVER_ERROR],
+    ['still waiting', never],
+  ])(
+    'shows no net worth error when no account is known to have bank data (menu %s)',
+    async (_, allAnswer) => {
+      mockOverview('1', {
+        answers: {
+          '/api/v1/accounts/all/bank/summary': allAnswer,
+          '/api/v1/accounts/1/bank/summary': SERVER_ERROR,
+        },
+      });
+      renderApp('/1');
+      expect(await within(await strip()).findByText('10 h')).toBeTruthy();
+      await waitFor(() => {
+        expect(screen.queryByTestId('net-worth-placeholder')).toBeNull();
+      });
+      expect(screen.queryByRole('heading', { name: 'Net worth' })).toBeNull();
+    },
+  );
+
   it('keeps the footer below the fold while the page waits for the server', async () => {
     const health = held();
     mockApi({ '/api/v1/health': health.answer });
@@ -1005,5 +1026,13 @@ describe('Home while it loads', () => {
     await waitFor(() => {
       expect(main.className).not.toContain('min-h-svh');
     });
+  });
+
+  it('has no full-screen content area once the server check failed', async () => {
+    mockApi({ '/api/v1/health': SERVER_ERROR });
+    renderApp('/1');
+    const main = await screen.findByRole('main');
+    expect(await within(main).findByText("Couldn't load this.")).toBeTruthy();
+    expect(main.className).not.toContain('min-h-svh');
   });
 });

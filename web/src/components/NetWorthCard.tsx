@@ -44,13 +44,15 @@ export function NetWorthCard({ scope, live }: { scope: AccountScope; live: boole
   const data = summary.data;
   if (data === undefined) {
     if (anyBankData === false) return null;
-    return summary.isError ? (
-      <NetWorthFrame scope={scope}>
-        <ErrorState onRetry={() => void summary.refetch()} />
-      </NetWorthFrame>
-    ) : (
-      <NetWorthPlaceholder scope={scope} />
-    );
+    if (summary.isError) {
+      // An error card only for a card that exists: some account is known to have bank data.
+      return anyBankData === true ? (
+        <NetWorthFrame scope={scope}>
+          <ErrorState onRetry={() => void summary.refetch()} />
+        </NetWorthFrame>
+      ) : null;
+    }
+    return <NetWorthPlaceholder scope={scope} />;
   }
   const updatedAt = data.updatedAt;
   if (updatedAt === null) return null;

@@ -570,14 +570,28 @@ An invitation, not an apology: one sentence, and an action where it fits.
   sets it. The placeholder is the card's own frame with the same lines, rows
   and text sizes as the loaded content (a no-break space in the text's classes
   holds a line), not a guess in pixels. On Home: the "This week" numbers, the
-  online line and the day bars, six rows of Latest under one day (each further
-  day adds its heading), three rows of Top skills, the net worth card and the
-  calendar. A card that is hidden without data (net worth) keeps its place while
-  it loads and collapses only once the answer says there is no data. Checked by
+  online line and the day bars, six rows of Latest under one day, three rows
+  of Top skills, the net worth card and the calendar. A card that is hidden
+  without data (net worth) keeps its place while it loads and collapses only
+  once the answer says there is no data. Checked by
   hand with `pnpm test:cls` (layout shift on Home ≤ 0.1, see
   [scripts/README.md](../scripts/README.md)).
 - While the dashboard waits for the server's `health`, the content area is at
-  least a screen high, so the footer doesn't jump down when the page renders.
+  least a screen high, so the footer doesn't jump down when the page renders
+  (not after `health` failed: the error is then all there is).
+- **Known limits on Home.** A placeholder can only reserve what is known before
+  the answer arrives, so these can still move, and are accepted:
+  - **Account chips (All accounts):** the placeholder is one row of two chips.
+    Many accounts or long names wrap to a second row. The account list is
+    normally there before Home draws, so the placeholder is rarely seen; a
+    wrapping placeholder would only be another guess.
+  - **Net worth on one account's Home:** the card keeps its place until the
+    summary answers. When some account has bank data but this one has none, it
+    then collapses and Top skills moves up. Whether an account has bank data is
+    not known before its summary arrives.
+  - **Top skills** reserves three rows; a week with fewer trained skills (or
+    none, the empty state) ends shorter. **Latest** reserves six rows under one
+    day; each further day adds its heading, and the card grows below.
 - Every page except Home loads its own code the first time it is opened. Until
   it is there, the page shows a skeleton in its rough shape: a grid of cards, one
   long list card, or the settings menu with cards beside it. The header and

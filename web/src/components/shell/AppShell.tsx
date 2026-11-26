@@ -67,7 +67,8 @@ export function AppShell({ page, destinationRoute, headingRef, scope, children }
           'safe-x mx-auto w-full max-w-[1376px] flex-1 pt-3.5 pb-6 desk:pt-8 desk:pr-[max(32px,var(--safe-right))] desk:pb-10 desk:pl-[max(32px,var(--safe-left))]',
           // While the page waits for `health`, the footer stays below the fold, so it doesn't
           // jump down off the screen when the page renders (docs/design.md, "Loading").
-          health.data === undefined && 'min-h-svh',
+          // Not after it failed: the error is all there is, so nothing will move.
+          health.isPending && 'min-h-svh',
         )}
       >
         <PageHeader

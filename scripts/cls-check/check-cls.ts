@@ -17,7 +17,7 @@
 // with the elements that moved.
 //
 // Options (environment):
-//   CLS_RUNS      runs per case (default 5)
+//   CLS_RUNS      runs per case, a whole number above 0 (default 5)
 //   CLS_CASES     comma-separated case names (default all): pc-1, pc-all,
 //                 mobile-1, mobile-all
 //   CLS_THROTTLE  0: no network or CPU throttling (default 1)
@@ -37,9 +37,21 @@ import { chromium, type Browser, type BrowserContextOptions } from 'playwright';
 import { seedScratch, startScratchServer, stopServer } from '../lib/scratch-server.ts';
 
 const OUT = resolve(import.meta.dirname, '../../.snapshots/cls');
-const RUNS = Number(process.env.CLS_RUNS ?? '5');
+/** A number option; empty or unset gives the default, anything else must pass `valid`. */
+function numberOption(name: string, fallback: number, valid: (value: number) => boolean): number {
+  const text = process.env[name]?.trim() ?? '';
+  if (text === '') return fallback;
+  const value = Number(text);
+  if (!valid(value)) {
+    console.error(`[cls-check] ${name}=${text} is not valid`);
+    process.exit(2);
+  }
+  return value;
+}
+
+const RUNS = numberOption('CLS_RUNS', 5, (value) => Number.isInteger(value) && value > 0);
 const THROTTLE = process.env.CLS_THROTTLE !== '0';
-const MAX = Number(process.env.CLS_MAX ?? '0.1');
+const MAX = numberOption('CLS_MAX', 0.1, (value) => Number.isFinite(value) && value >= 0);
 
 const PC: BrowserContextOptions = { viewport: { width: 1440, height: 900 } };
 const MOBILE: BrowserContextOptions = {
