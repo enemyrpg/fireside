@@ -6,9 +6,22 @@ import {
   type Event,
   type RaidSpecialLootPayload,
 } from '@fireside/shared';
-import { and, asc, eq, isNotNull, or } from 'drizzle-orm';
+import { and, asc, eq, getTableName, isNotNull, or } from 'drizzle-orm';
 import type { Queryable } from '../db/index.js';
-import { accounts, events, lootEvents, lootItems, raidSpecialLoot } from '../db/schema.js';
+import {
+  accounts,
+  events,
+  lootEvents,
+  lootItems,
+  raidDropChoices,
+  raidSpecialLoot,
+} from '../db/schema.js';
+import {
+  sessionDropKeys,
+  settleAllChoices,
+  settleDrops,
+  tidyChoices,
+} from '../raids/choice-keys.js';
 import type { Projection } from './framework.js';
 import { accountIdOf, type AccountKey } from './lookup.js';
 
@@ -18,11 +31,16 @@ import { accountIdOf, type AccountKey } from './lookup.js';
 // item in the chest's `loot` event. They must count once. Refresh from raw per
 // (account, session): on a `raid.special_loot` event or raid loot, the
 // session's rows are rebuilt from its projected `raid.special_loot` events and
-// the purple items in its projected raid loot. Each `SELF` event takes the
-// first unmatched loot purple of the same raid and item. The result depends
-// only on the set of events, so arrival order and `rebuild` give the same rows.
+// the purple items in its projected raid loot. Each `SELF` event, oldest
+// first, takes the unmatched loot purple of the same raid and item nearest to
+// it in time (the older one on a tie). The result depends only on the set of
+// events, so arrival order and `rebuild` give the same rows.
 //
 // The `loot` tables are unchanged: loot totals still include own purples once.
+//
+// The user's split choices are not derived, but are keyed by these rows. Each
+// refresh settles them before and after (raids/choice-keys.ts), so a choice
+// stays on the drop the user saw and then sticks to the drop's own event.
 
 type Row = typeof raidSpecialLoot.$inferInsert;
 
@@ -46,14 +64,14 @@ interface SpecialEvent {
 }
 
 /**
- * The session's projected `raid.special_loot` events, plus `currentEventId`,
- * oldest first. Failed and pending events are never read.
+ * The session's projected `raid.special_loot` events, plus `currentEventId`
+ * (if not `null`), oldest first. Failed and pending events are never read.
  */
 function specialEvents(
   tx: Queryable,
   { userId, accountHash }: AccountKey,
   sessionId: string,
-  currentEventId: string,
+  currentEventId: string | null,
 ): SpecialEvent[] {
   return tx
     .select({ eventId: events.eventId, occurredAt: events.occurredAt, payload: events.payload })
@@ -64,7 +82,9 @@ function specialEvents(
         eq(events.type, 'raid.special_loot'),
         eq(events.userId, userId),
         eq(events.accountHash, accountHash),
-        or(isNotNull(events.processedAt), eq(events.eventId, currentEventId)),
+        currentEventId === null
+          ? isNotNull(events.processedAt)
+          : or(isNotNull(events.processedAt), eq(events.eventId, currentEventId)),
       ),
     )
     .orderBy(asc(events.occurredAt), asc(events.eventId))
@@ -119,6 +139,30 @@ function lootPurples(tx: Queryable, accountId: number, sessionId: string): LootP
 }
 
 /**
+ * Index of the unmatched purple of the event's raid and item nearest to
+ * `occurredAt`, or -1. `purples` is oldest first, so a tie keeps the older one.
+ */
+function nearestPurple(
+  purples: readonly LootPurple[],
+  raidGroup: string,
+  payload: RaidSpecialLootPayload,
+  occurredAt: string,
+): number {
+  const at = Date.parse(occurredAt);
+  let best = -1;
+  let bestDistance = Infinity;
+  purples.forEach((purple, index) => {
+    if (purple.raidGroup !== raidGroup || purple.itemId !== payload.item.itemId) return;
+    const distance = Math.abs(Date.parse(purple.occurredAt) - at);
+    if (distance < bestDistance) {
+      best = index;
+      bestDistance = distance;
+    }
+  });
+  return best;
+}
+
+/**
  * The session's special loot: every `raid.special_loot` event, with `SELF`
  * events matched to a loot purple, plus loot purples no event matched.
  */
@@ -133,11 +177,7 @@ export function specialLootRows(
     const raid = normalizeBossName(payload.raid);
     const raidGroup = raidGroupOf(raid);
     const index =
-      payload.recipient === 'SELF'
-        ? unmatched.findIndex(
-            (purple) => purple.raidGroup === raidGroup && purple.itemId === payload.item.itemId,
-          )
-        : -1;
+      payload.recipient === 'SELF' ? nearestPurple(unmatched, raidGroup, payload, occurredAt) : -1;
     const [loot] = index === -1 ? [] : unmatched.splice(index, 1);
     return {
       accountId,
@@ -179,25 +219,81 @@ export function specialLootRows(
   return rows;
 }
 
+/**
+ * Rebuilds one session's rows from raw. `currentEventId` is the event being
+ * projected (not marked processed yet), if any. Choices are settled with the
+ * old rows first, so one the user made on a drop moves to its event before
+ * the matching can change, and again with the new rows.
+ */
+function refreshSession(
+  tx: Queryable,
+  account: AccountKey,
+  accountId: number,
+  sessionId: string,
+  currentEventId: string | null,
+): number {
+  let moved = settleDrops(tx, sessionDropKeys(tx, accountId, sessionId));
+  tx.delete(raidSpecialLoot)
+    .where(and(eq(raidSpecialLoot.sessionId, sessionId), eq(raidSpecialLoot.accountId, accountId)))
+    .run();
+  const rows = specialLootRows(
+    accountId,
+    sessionId,
+    specialEvents(tx, account, sessionId, currentEventId),
+    lootPurples(tx, accountId, sessionId),
+  );
+  if (rows.length > 0) tx.insert(raidSpecialLoot).values(rows).run();
+  moved += settleDrops(tx, rows);
+  return moved;
+}
+
 export const raidSpecialLootProjection: Projection = {
   name: 'raid-special-loot',
+  // 2: a `SELF` event takes the nearest unmatched chest purple, not the oldest.
+  version: 2,
+
+  // Refreshes every session that has special loot. A session without rows has
+  // no projected raid purples, so the new rule changes nothing there.
+  recompute(tx) {
+    const sessions = tx
+      .selectDistinct({
+        accountId: raidSpecialLoot.accountId,
+        sessionId: raidSpecialLoot.sessionId,
+        userId: accounts.userId,
+        accountHash: accounts.accountHash,
+      })
+      .from(raidSpecialLoot)
+      .innerJoin(accounts, eq(raidSpecialLoot.accountId, accounts.id))
+      .all();
+    let moved = 0;
+    for (const { accountId, sessionId, userId, accountHash } of sessions) {
+      moved += refreshSession(tx, { userId, accountHash }, accountId, sessionId, null);
+    }
+    const choices = tidyChoices(tx);
+    return {
+      tables: [getTableName(raidSpecialLoot), getTableName(raidDropChoices)],
+      counts: {
+        raidSessions: sessions.length,
+        choicesMoved: moved + choices.moved,
+        choicesDeleted: choices.deleted,
+      },
+    };
+  },
 
   apply(tx, event) {
     if (!affectsSpecialLoot(event)) return;
-    const accountId = accountIdOf(tx, event);
-    const { sessionId } = event;
-    tx.delete(raidSpecialLoot)
-      .where(
-        and(eq(raidSpecialLoot.sessionId, sessionId), eq(raidSpecialLoot.accountId, accountId)),
-      )
-      .run();
-    const rows = specialLootRows(
-      accountId,
-      sessionId,
-      specialEvents(tx, event, sessionId, event.eventId),
-      lootPurples(tx, accountId, sessionId),
-    );
-    if (rows.length > 0) tx.insert(raidSpecialLoot).values(rows).run();
+    refreshSession(tx, event, accountIdOf(tx, event), event.sessionId, event.eventId);
+  },
+
+  // Before the rows are cleared: move choices to the event of the drop the user sees now.
+  beforeRebuild(tx) {
+    settleAllChoices(tx);
+  },
+
+  afterReplay(tx, { log }) {
+    const { deleted } = tidyChoices(tx);
+    // Counts only: choices hold nicknames and notes.
+    if (deleted > 0) log?.warn({ deleted }, 'Removed split choices of drops that no longer exist');
   },
 
   reset(tx) {

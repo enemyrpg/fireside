@@ -185,7 +185,64 @@ function consistencyChecks(database: Database): CheckResult[] {
       'SELECT count(*) FROM api_keys WHERE revoked_at IS NULL AND revoked_by_user_id IS NOT NULL',
     ),
     zero('foreign keys intact', 'SELECT count(*) FROM pragma_foreign_key_check'),
+    // Raid split choices (raids/choice-keys.ts): none hidden behind another
+    // row of the same drop, and none left without a drop although its event
+    // projected fine. Counts only: choices hold nicknames and notes.
+    zero(
+      'raid_drop_choices: no drop has choices under both keys',
+      'SELECT count(*) FROM raid_special_loot r ' +
+        'JOIN raid_drop_choices e ON e.event_id = r.special_event_id AND e.item_index = 0 ' +
+        'JOIN raid_drop_choices c ON c.event_id = r.loot_event_id ' +
+        'AND c.item_index = r.loot_item_position',
+    ),
+    zero(
+      'raid_drop_choices: every choice of a projected event is shown by a drop',
+      'SELECT count(*) FROM raid_drop_choices c JOIN events USING (event_id) ' +
+        'WHERE events.processed_at IS NOT NULL AND events.projection_error IS NULL ' +
+        'AND NOT EXISTS (SELECT 1 FROM raid_special_loot r WHERE ' +
+        '(r.special_event_id = c.event_id AND c.item_index = 0) OR ' +
+        '(r.loot_event_id = c.event_id AND r.loot_item_position = c.item_index))',
+    ),
   ];
+}
+
+const CHOICE_FIELDS = ['mode', 'own_value', 'party_size', 'nickname', 'note'];
+
+/**
+ * Every value set in a raid split choice, as `field = value` lines, sorted;
+ * `undefined` without the table. Only compared, never printed.
+ */
+function choiceValues(sqlite: BetterSqlite3.Database): string[] | undefined {
+  if (!userTables(sqlite).includes('raid_drop_choices')) return undefined;
+  const values: string[] = [];
+  for (const field of CHOICE_FIELDS) {
+    const rows = sqlite
+      .prepare(`SELECT ${quote(field)} FROM raid_drop_choices WHERE ${quote(field)} IS NOT NULL`)
+      .pluck()
+      .all();
+    for (const value of rows) values.push(`${field} = ${JSON.stringify(value)}`);
+  }
+  return values.sort();
+}
+
+/**
+ * The upgrade may move split choices to another key, but must keep every
+ * value the user typed. A value only goes when a newer one for the same
+ * field of the same drop replaced it, or when its drop is gone: both show as
+ * missing here, to be checked by hand.
+ */
+function choiceValuesCheck(before: string[] | undefined, after: string[] | undefined): CheckResult {
+  const left = [...(after ?? [])];
+  let missing = 0;
+  for (const value of before ?? []) {
+    const index = left.indexOf(value);
+    if (index === -1) missing += 1;
+    else left.splice(index, 1);
+  }
+  const name = 'raid_drop_choices: every value kept';
+  return missing === 0
+    ? { name, ok: true }
+    : { name, ok: false, detail: `${String(missing)} missing` };
 }
 
 /** Checks for a database migrated from before users (0020): everything is user 1's. */
@@ -278,6 +335,7 @@ export function checkMigration(
 ): MigrationCheckReport {
   const raw = new BetterSqlite3(file, { fileMustExist: true });
   let before: Map<string, TableState>;
+  let choicesBefore: string[] | undefined;
   let hadUsers: boolean;
   let hadTwoFactor: boolean;
   // Columns a pending migration adds are left out: from before users (0020)
@@ -297,6 +355,7 @@ export function checkMigration(
       ...(hadTwoFactor ? {} : COLUMNS_ADDED_BY_TWO_FACTOR_MIGRATION),
     };
     before = tableStates(raw, ignore);
+    choicesBefore = choiceValues(raw);
     // Without the columns a full rebuild sets again, in case the upgrade is one.
     for (const [table, columns] of Object.entries(REBUILT_COLUMNS)) {
       if (before.has(table)) {
@@ -342,6 +401,7 @@ export function checkMigration(
       ...(hadUsers ? [] : ownershipChecks(database)),
       ...(hadTwoFactor ? [] : [twoFactorOffCheck(database)]),
       ...consistencyChecks(database),
+      choiceValuesCheck(choicesBefore, choiceValues(database.sqlite)),
     ];
 
     // One clock for both sides: the running server would have closed these

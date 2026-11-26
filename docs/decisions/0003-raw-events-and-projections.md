@@ -44,7 +44,12 @@ destroy data.
   failures.
 - Tables that are not derived (users, keys, sessions, settings, icons, prices,
   the user's own choices) are never touched by a rebuild, and must not be
-  derivable only from data that a rebuild would clear.
+  derivable only from data that a rebuild would clear. One refinement
+  (2026-11-26): the raid split choices are keyed by derived drops, so a
+  rebuild may move a choice to another key of the same drop, and removes a
+  choice only when its event was projected without an error and its drop is
+  gone. What the user typed is never edited
+  ([architecture.md](../architecture.md#raid-split-choices)).
 - The database only grows. A rebuild of a large database takes about a
   minute.
 - Details: [architecture.md](../architecture.md#raw-events-and-projections).

@@ -28,4 +28,9 @@ a raid chat message.
 - Features that would need other players' data (party lists, comparisons with
   friends, public hiscores of others) are out.
 - Seed data and fixtures use made-up account names that can't be real players.
+- A nickname must not outlive its drop out of the owner's sight. Once the
+  drop is definitely gone (its event projected fine, and no drop has its
+  key), the choice is deleted; while its event only failed, it is kept and
+  shows again once the event is projected
+  ([architecture.md](../architecture.md#raid-split-choices)).
 - See [legal.md](../legal.md) and [data-collected.md](../data-collected.md).

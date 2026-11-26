@@ -51,7 +51,12 @@ describe('migration 0020 (users and ownership)', () => {
       revokeApiKey(db, id, { byUserId: FIRST_USER_ID, now: NOW });
       const sqlite = database.sqlite;
       const account = sqlite.prepare('SELECT id FROM accounts ORDER BY id LIMIT 1').pluck().get();
-      const event = sqlite.prepare('SELECT event_id FROM events LIMIT 1').pluck().get();
+      // A drop's own event: a choice on an event with no drop would be removed.
+      const event = sqlite
+        .prepare("SELECT event_id FROM events WHERE type = 'raid.special_loot' LIMIT 1")
+        .pluck()
+        .get();
+      expect(event).toBeDefined();
       sqlite
         .prepare(
           "INSERT INTO raid_split_defaults (account_id, mode, updated_at) VALUES (?, 'FFA', ?)",

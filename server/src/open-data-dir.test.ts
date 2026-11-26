@@ -304,7 +304,7 @@ describe('openDataDir after a projection rule change', () => {
   it('records the current versions, so the next start does nothing', () => {
     openDatabase(databasePath(dataDir)).close();
     const first = openDataDir({ dataDir, backupDir });
-    expect(first.database.upgrade?.projections).toEqual(['sessions', 'kc']);
+    expect(first.database.upgrade?.projections).toEqual(['sessions', 'kc', 'raid-special-loot']);
     expect(first.preMigrateBackup).toBeDefined();
     first.database.close();
     first.lock.release();

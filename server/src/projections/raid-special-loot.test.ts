@@ -121,6 +121,31 @@ describe('raid special loot projection', () => {
     ]);
   });
 
+  it('matches a SELF event to the nearest chest purple, not the oldest', () => {
+    // Two chest-only fangs in one session; only the second one's event is known.
+    const f = eventFactory();
+    const first = f.loot('19:00', { source: TOA, items: [fangItem], killCount: 140 });
+    const second = f.loot('19:40', { source: TOA, items: [fangItem], killCount: 141 });
+    const special = f.raidSpecialLoot('19:40');
+    const rows = specialLoot(first, second, special);
+    expect(rows.map((row) => [row.specialEventId, row.lootEventId, row.killCount])).toEqual([
+      [null, first.eventId, 140],
+      [special.eventId, second.eventId, 141],
+    ]);
+  });
+
+  it('keeps the older chest purple on a tie in time', () => {
+    const f = eventFactory();
+    const first = f.loot('19:00', { source: TOA, items: [fangItem] });
+    const second = f.loot('19:40', { source: TOA, items: [fangItem] });
+    const special = f.raidSpecialLoot('19:20');
+    const rows = specialLoot(first, second, special);
+    expect(rows.map((row) => [row.specialEventId, row.lootEventId])).toEqual([
+      [special.eventId, first.eventId],
+      [null, second.eventId],
+    ]);
+  });
+
   it('does not merge across sessions, raids or items', () => {
     const f = eventFactory();
     const events = [

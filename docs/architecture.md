@@ -13,6 +13,7 @@ reasons behind the larger choices are in [decisions/](decisions/README.md).
 - [From the plugin to the database](#from-the-plugin-to-the-database)
 - [Raw events and projections](#raw-events-and-projections)
 - [Rebuild](#rebuild)
+- [Raid split choices](#raid-split-choices)
 - [Sessions](#sessions)
 - [Time and time zones](#time-and-time-zones)
 - [Deleting a user](#deleting-a-user)
@@ -192,8 +193,11 @@ Afterwards the current rules version of every projection is stored in
 
 Account IDs are kept. Tables that are not derived are never touched: users,
 sessions and devices, API keys, invites, audit log, settings, icons, prices
-and price history, `external_snapshots`, `clog_reads`, the user's raid split
-choices and collection log source. `pnpm --filter @fireside/server
+and price history, `external_snapshots`, `clog_reads` and the collection log
+source. The one exception is the user's raid split choices: a rebuild (and a
+retry of failed events) may move them to another key of the same drop, or
+remove those whose drop is definitely gone, by the rules in
+[Raid split choices](#raid-split-choices). It never edits what the user typed. `pnpm --filter @fireside/server
 check-migration` uses a rebuild to check that a migration keeps the derived
 tables the same.
 
@@ -211,6 +215,41 @@ otherwise a full rebuild. Then it stores the current versions. The copy before
 migrating is taken first, and the server listens only afterwards, so ingest
 waits. `check-migration` allows the recomputed tables to differ and compares
 them with a rebuild instead.
+
+## Raid split choices
+
+The split tracker's choices (mode, own value, party size, nickname, note, in
+`raid_drop_choices`) are typed by the user and can't be rebuilt from raw
+events. They are keyed by the drop they were made for
+(`server/src/raids/choice-keys.ts`):
+
+- Own purples arrive twice, as a `raid.special_loot` event (`SELF`) and as an
+  item in the chest's `loot` event, and count once
+  (`server/src/projections/raid-special-loot.ts`). Each `SELF` event, oldest
+  first, takes the unmatched chest purple of the same raid and item **nearest
+  to it in time**, the older one on a tie.
+- A drop with its own event is keyed by that event (index 0). A purple known
+  only from the chest (no `SELF` event, or one that failed or hasn't been
+  projected yet) is keyed by the chest's `loot` event and the item's position.
+- When a chest purple gets its event, its choices **move to the event key**:
+  on the next write to the drop, whenever the session's special loot is
+  refreshed (before with the old rows and after with the new ones), and on
+  rebuild and retry. From then on a choice no longer depends on which chest
+  the event is matched with, so a later matching change keeps it on its drop.
+- If both keys hold choices, they are merged field by field: the row changed
+  last wins, but an empty field never replaces a filled one. Then the chest
+  row is deleted, so no choice is ever hidden behind another.
+- A choice whose drop isn't shown is kept as long as its event failed or
+  hasn't been projected: it shows again once the event is projected. Only
+  after a rebuild, a retry or an upgrade, when its event was projected without
+  an error and no drop has its key, is it deleted (so a nickname nobody can
+  see or clear doesn't stay;
+  [ADR 0006](decisions/0006-no-data-about-other-players.md)). The log gets the
+  count, never the text.
+- Deleting a user deletes their choices with their events
+  ([Deleting a user](#deleting-a-user)). `check-migration` checks that no
+  drop has choices under both keys, that every choice of a projected event is
+  shown, and that every value is kept.
 
 ## Sessions
 

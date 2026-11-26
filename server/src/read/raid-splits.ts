@@ -411,8 +411,9 @@ export function trackedDrops(db: Queryable, accountIds: readonly number[]): Trac
     // Every row has one of the two events.
     if (!key) continue;
     const chestDropId = chestKey ? choiceMapKey(chestKey) : undefined;
-    // Choices made while the purple was only known from the chest stay under
-    // the chest key. The event's own row wins if both exist.
+    // Choices made while the purple was only known from the chest move to the
+    // event key when the event is projected (raids/choice-keys.ts). Until then,
+    // and for a database not yet upgraded, the chest key is read too.
     const stored = [eventKey, chestKey].find(
       (candidate) => candidate && choices.has(choiceMapKey(candidate)),
     );
