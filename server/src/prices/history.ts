@@ -5,8 +5,10 @@ import { itemPriceHistory } from '../db/schema.js';
 import { inChunks } from '../projections/bank.js';
 import { currentPrice } from '../read/prices.js';
 
-// `item_price_history`: the prices of earlier fetches, for Price movers. Nothing here knows how
-// often prices are fetched, and retention does not look at the clock or at the times at all: it
+// `item_price_history`: the prices of earlier fetches, for Price movers. Storing and retention do
+// not depend on how often prices are fetched; only the reach of each period in
+// `PRICE_MOVER_WINDOWS` assumes the price job's schedule (jobs/prices.ts: at most once an hour,
+// less than 4 hours apart). Retention does not look at the clock or at the times at all: it
 // keeps a number of fetches in the order they were stored, so a wrong clock can never delete more
 // than the same number of ordinary fetches would, and real fetches are kept again as soon as the
 // clock is right. A baseline is the stored fetch nearest to the time asked for, within reach of it,
@@ -15,7 +17,10 @@ import { currentPrice } from '../read/prices.js';
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 
-/** The most recently stored fetches kept, whatever their times: 48 hours of hourly fetches. */
+/**
+ * The most recently stored fetches kept, whatever their times. With at most one fetch an hour
+ * they cover at least 48 hours, enough for 24 h; when idle (about 4 hours apart) about 8 days.
+ */
 export const PRICE_HISTORY_HOURLY_FETCHES = 48;
 
 /** The most recently stored first-fetches-of-a-UTC-day kept as well: 35 days of daily ones. */

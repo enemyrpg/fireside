@@ -287,6 +287,34 @@ describe('prices job', () => {
     expect(t.status()).toMatchObject({ lastFetchAt: '2026-11-16T14:00:00.000Z', lastError: null });
   });
 
+  it('retries a failed history fetch after an hour on an idle server, then waits for history again', async () => {
+    const t = setup();
+    t.triedAt(START);
+    const job = t.start();
+    // 404: not retried by the client, so one attempt is one request.
+    t.setStatus(404);
+    await vi.advanceTimersByTimeAsync(PRICES_HISTORY_INTERVAL_MS);
+    await job.idle();
+    const attempts = t.requests.length;
+    expect(attempts).toBe(1);
+    expect(t.status()).toMatchObject({ lastError: { message: 'HTTP 404' } });
+
+    t.setStatus(200);
+    await vi.advanceTimersByTimeAsync(PRICES_INTERVAL_MS - 2 * MINUTE);
+    expect(t.requests).toHaveLength(attempts);
+    await vi.advanceTimersByTimeAsync(2 * MINUTE);
+    await job.idle();
+    expect(t.requests).toHaveLength(attempts + 1);
+    expect(t.status()).toMatchObject({ lastError: null });
+
+    // Back to the history interval once a fetch succeeded.
+    await vi.advanceTimersByTimeAsync(PRICES_HISTORY_INTERVAL_MS - 2 * MINUTE);
+    expect(t.requests).toHaveLength(attempts + 1);
+    await vi.advanceTimersByTimeAsync(2 * MINUTE);
+    await job.idle();
+    expect(t.requests).toHaveLength(attempts + 2);
+  });
+
   it('does not fetch again after a restart within the hour', async () => {
     const t = setup();
     const first = t.start();

@@ -328,8 +328,11 @@ The sources today:
     session of any account is open, if the last attempt is at least an hour
     old. A read never waits: it answers with the stored prices
     (`prices.fetchedAt` says how old they are), and the fetch runs in the
-    background;
-  - and whenever the last attempt is 3 h 55 min old, for the price history.
+    background. When those prices are over an hour old, the dashboard asks the
+    account's bank, summary, price movers and potion storage again once, a few
+    seconds later, so they all show the new prices;
+  - and whenever the last attempt is 3 h 55 min old (an hour after a failed
+    one), for the price history.
     With less than 4 hours between two fetches, a fetch is always within the
     2 hours the 24 h period allows. 7 and 30 days compare with the first
     fetch of each UTC day, and allow 26 hours before the target, because two

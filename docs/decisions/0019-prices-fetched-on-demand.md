@@ -22,7 +22,8 @@ simulation of 45 days, one dashboard visit a day at a random time showed
   last attempt is at least an hour old. The read answers at once with the
   stored prices. The fetch runs in the background.
 - It also fetches whenever the last attempt is 3 h 55 min old
-  (`PRICES_HISTORY_INTERVAL_MS`). The job checks once a minute, so two
+  (`PRICES_HISTORY_INTERVAL_MS`), or an hour old when that attempt failed, so
+  one error does not leave almost 8 hours between two stored fetches. The job checks once a minute, so two
   fetches are less than 4 hours apart, and a fetch is always within the 2
   hours the 24 h period allows. With 6 h, 24 h showed on only 80 % of the
   visits in the simulation.
@@ -46,5 +47,10 @@ simulation of 45 days, one dashboard visit a day at a random time showed
   out of reach.
 - A "7 d" or "30 d" baseline can be up to 26 hours older than its label (it
   was 22 hours), and never more than 2 hours newer.
-- The first read after a long pause shows the old prices, with their time,
-  until the background fetch is done.
+- A read after a pause answers with the old prices, with their time. The
+  bank queries never poll, so when the answer's current prices are over an
+  hour old the dashboard asks the bank-price queries of that account again
+  once, a few seconds later (`useRefreshStalePrices` in `web/src/api/hooks.ts`):
+  then they all show the new prices. At most once per account and price fetch
+  per page visit, never in a loop, and never with snapshot prices. If the
+  fetch failed or was slow, the old prices stay until the next visit.

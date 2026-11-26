@@ -51,7 +51,7 @@ export interface PricesJob extends RunningJob {
  * - when prices are read (`requested`) or a session is open (checked at start
  *   and every minute), if the last attempt is at least an hour old;
  * - and whenever the last attempt is `PRICES_HISTORY_INTERVAL_MS` old, for
- *   the price history.
+ *   the price history (an hour, if that attempt failed).
  * Never more than one fetch at a time and never more than once an hour,
  * failed attempts included. The time of the last attempt is in the
  * database, so a restart does not cause an extra fetch. Does nothing at all
@@ -88,6 +88,19 @@ export function startPricesJob({
   const attemptOlderThan = (minAgeMs: number, nowMs: number) =>
     nextAttemptAt(sourceState(db, 'WIKI_PRICES'), minAgeMs, nowMs) <= nowMs;
 
+  /**
+   * How long after the last attempt the history fetch is due: an hour after a
+   * failed one, as before on-demand fetching, so one error from the wiki does
+   * not leave almost 8 hours between two stored fetches (a hole in the 24 h
+   * Price movers period a day later).
+   */
+  const historyInterval = () => {
+    const row = sourceState(db, 'WIKI_PRICES');
+    const failed =
+      row?.lastErrorAt != null && row.lastAttemptAt != null && row.lastErrorAt >= row.lastAttemptAt;
+    return failed ? PRICES_INTERVAL_MS : PRICES_HISTORY_INTERVAL_MS;
+  };
+
   const sessionOpen = () =>
     db.select({ id: sessions.id }).from(sessions).where(isNull(sessions.endedAt)).limit(1).get() !==
     undefined;
@@ -117,7 +130,7 @@ export function startPricesJob({
   const tick = () => {
     startIf(
       (nowMs) =>
-        attemptOlderThan(PRICES_HISTORY_INTERVAL_MS, nowMs) ||
+        attemptOlderThan(historyInterval(), nowMs) ||
         (attemptOlderThan(PRICES_INTERVAL_MS, nowMs) && sessionOpen()),
       'check',
     );
