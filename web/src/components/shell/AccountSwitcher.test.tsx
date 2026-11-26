@@ -3,6 +3,7 @@ import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LIVE_POLL_MS } from '@/api/query-client';
+import { SESSIONS_EMPTY } from '@/pages/SessionsPage';
 import { mockApi, renderApp } from '@/test/render-app';
 import { json } from '@/test/sessions';
 
@@ -74,6 +75,10 @@ describe('AccountSwitcher online state', () => {
     });
     // A page that shows no online state of its own: only the switcher polls.
     renderApp('/1/activity/sessions');
+    // The page also reads the accounts list, and its code loads in real time.
+    // If it mounted while time is passed below, it would fetch the list once
+    // (older than `staleTime` by then), which is not a poll. So wait for it.
+    await screen.findByText(SESSIONS_EMPTY);
     const user = userEvent.setup({ advanceTimers: (ms) => vi.advanceTimersByTime(ms) });
 
     await user.click(await screen.findByRole('button', { name: /^Choose account/ }));
