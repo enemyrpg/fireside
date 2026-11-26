@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.2](https://github.com/enemyrpg/fireside/compare/v0.2.1...v0.2.2) (2026-11-26)
+
+
+### Bug fixes
+
+* **server:** keep raid split choices on the right drop ([#47](https://github.com/enemyrpg/fireside/issues/47)) ([36d606a](https://github.com/enemyrpg/fireside/commit/36d606a4afec79db9548ec9d6e13ff8586ebbe3a))
+* **web:** keep Home's layout stable while cards load ([#43](https://github.com/enemyrpg/fireside/issues/43)) ([0a6bab6](https://github.com/enemyrpg/fireside/commit/0a6bab6f96452b19f362e3456247da8494573c82))
+
+
+### Performance
+
+* fetch wiki prices only when they are needed ([#45](https://github.com/enemyrpg/fireside/issues/45)) ([4af1778](https://github.com/enemyrpg/fireside/commit/4af1778b0c6ee5a41d883c92824211d3f824c149))
+
 ## [0.2.1](https://github.com/enemyrpg/fireside/compare/v0.2.0...v0.2.1) (2026-11-26)
 
 
