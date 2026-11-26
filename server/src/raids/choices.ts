@@ -131,7 +131,11 @@ export function updateDropChoices(
         .where(eq(raidManualDrops.id, storage.id))
         .run();
     } else {
-      const key = storage.stored ?? storage.key;
+      // The edit collapses the drop's rows: what the owner saw (both keys
+      // merged) plus the changes is the whole row under `key`, and the chest
+      // row goes. A field the owner cleared stays cleared.
+      const { key, chestKey } = storage;
+      if (chestKey) tx.delete(raidDropChoices).where(choiceRow(chestKey)).run();
       if (Object.values(next).every((value) => value === null)) {
         // Nothing set: no row, so the table only holds real choices.
         tx.delete(raidDropChoices).where(choiceRow(key)).run();

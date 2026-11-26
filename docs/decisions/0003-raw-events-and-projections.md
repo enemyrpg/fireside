@@ -48,3 +48,5 @@ destroy data.
 - The database only grows. A rebuild of a large database takes about a
   minute.
 - Details: [architecture.md](../architecture.md#raw-events-and-projections).
+- See also [0020](0020-raid-split-choice-keys.md): how the raid split choices
+  stay on their drop, and when one is removed.

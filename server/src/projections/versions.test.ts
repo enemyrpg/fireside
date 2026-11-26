@@ -10,6 +10,7 @@ import { emptyRun, eventFactory, ingestBatch, TEST_NOW } from './testing.js';
 import {
   outdatedProjections,
   projectionUpgrade,
+  REBUILD_SETTLED_TABLES,
   REBUILT_COLUMNS,
   REBUILT_TABLES,
   recomputeOutdated,
@@ -54,10 +55,19 @@ function oldRun() {
 describe('projection versions', () => {
   it('counts a missing row as version 1', () => {
     const run = emptyRun();
-    expect(outdatedProjections(run.database.sqlite).map((p) => p.name)).toEqual(['sessions', 'kc']);
+    expect(outdatedProjections(run.database.sqlite).map((p) => p.name)).toEqual([
+      'sessions',
+      'kc',
+      'raid-special-loot',
+    ]);
     recordCurrentVersions(run.database.db);
     expect(outdatedProjections(run.database.sqlite)).toEqual([]);
-    expect(versions(run)).toMatchObject({ accounts: 1, sessions: 2, kc: 2 });
+    expect(versions(run)).toMatchObject({
+      accounts: 1,
+      sessions: 2,
+      kc: 2,
+      'raid-special-loot': 2,
+    });
   });
 
   it('recomputes an outdated projection and records the versions', () => {
@@ -66,8 +76,14 @@ describe('projection versions', () => {
     expect(upgrade.pending(run.database.sqlite)).toBe(true);
     const report = upgrade.run(run.database.db, run.database.sqlite);
     expect(report).toMatchObject({
-      projections: ['sessions', 'kc'],
-      counts: { sessions: 1, kcObservationsRemoved: 0 },
+      projections: ['sessions', 'kc', 'raid-special-loot'],
+      counts: {
+        sessions: 1,
+        kcObservationsRemoved: 0,
+        raidSessions: 0,
+        choicesMoved: 0,
+        choicesDeleted: 0,
+      },
       columns: {},
     });
     expect(report.tables).toEqual(
@@ -112,14 +128,16 @@ describe('projection versions', () => {
     const projections = PROJECTIONS.map((p) => (p.name === 'sessions' ? withoutRecompute : p));
     const outdated = outdatedProjections(run.database.sqlite, projections);
     // kc has a recompute, but one outdated projection without makes it a rebuild.
-    expect(outdated.map((p) => p.name)).toEqual(['sessions', 'kc']);
+    expect(outdated.map((p) => p.name)).toEqual(['sessions', 'kc', 'raid-special-loot']);
 
     const report = recomputeOutdated(run.database.db, outdated, {
       projections,
       now: () => TEST_NOW,
     });
-    expect(report.counts).toEqual({ events: 5, failed: 0 });
-    expect(report.tables).toEqual([...REBUILT_TABLES, 'projection_versions'].sort());
+    expect(report.counts).toEqual({ choicesMoved: 0, events: 5, failed: 0 });
+    expect(report.tables).toEqual(
+      [...REBUILT_TABLES, ...REBUILD_SETTLED_TABLES, 'projection_versions'].sort(),
+    );
     expect(report.columns).toEqual(REBUILT_COLUMNS);
     expect(run.database.db.select({ afk: sessions.afkSeconds }).from(sessions).get()).toEqual({
       afk: 120,

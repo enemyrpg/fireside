@@ -63,6 +63,18 @@ export interface Projection {
    */
   reset(tx: Queryable): void;
   /**
+   * Runs once when this projection is outdated at startup, before its
+   * `recompute` or the fallback rebuild, while the rows built with the old
+   * rules are still there. For data that is not derived but keyed by derived
+   * rows (the raid split choices). Returns counts for the log.
+   */
+  beforeUpgrade?(tx: Queryable): Record<string, number>;
+  /**
+   * Runs after a rebuild's replay, and after a retry of failed events that
+   * projected at least one.
+   */
+  afterReplay?(tx: Queryable, options: { log?: ProjectionLogger | undefined }): void;
+  /**
    * The derived tables as plain, sorted data without surrogate IDs, so two
    * databases built in different orders can be compared.
    */
@@ -288,7 +300,19 @@ export function reprocessFailed(db: Db, options: ProjectionOptions): ProjectionR
   for (let start = 0; start < ids.length; start += CHUNK_SIZE) {
     addResult(total, projectEvents(db, ids.slice(start, start + CHUNK_SIZE), options));
   }
+  if (total.processed > 0) {
+    db.transaction(
+      (tx) => {
+        afterReplay(tx, options);
+      },
+      { behavior: 'immediate' },
+    );
+  }
   return total;
+}
+
+function afterReplay(tx: Queryable, { projections, log }: ProjectionOptions): void {
+  for (const projection of projections) projection.afterReplay?.(tx, { log });
 }
 
 /**
@@ -322,7 +346,10 @@ export function rebuildProjectionsIn(tx: Queryable, options: ProjectionOptions):
       .orderBy(asc(events.occurredAt), asc(events.eventId))
       .limit(CHUNK_SIZE)
       .all();
-    if (rows.length === 0) return total;
+    if (rows.length === 0) {
+      afterReplay(tx, options);
+      return total;
+    }
     addResult(total, projectRows(tx, rows, options));
     after = rows[rows.length - 1];
   }

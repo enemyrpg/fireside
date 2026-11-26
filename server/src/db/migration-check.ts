@@ -6,7 +6,8 @@ import { systemClock, type Clock } from '../auth/api-keys.js';
 import { PROJECTIONS } from '../projections/index.js';
 import { closeTimedOutSessions } from '../projections/sessions.js';
 import { projectionUpgrade, REBUILT_COLUMNS } from '../projections/versions.js';
-import { MIGRATIONS_TABLE, openDatabase, type Database } from './index.js';
+import { mergeChoices, type ChoiceRow } from '../raids/choice-keys.js';
+import { MIGRATIONS_TABLE, openDatabase, type Database, type UpgradeReport } from './index.js';
 
 // Checks that migrating a database changes nothing but what the migration
 // adds: same tables, same rows, same content, and a rebuild after it gives the same
@@ -185,7 +186,111 @@ function consistencyChecks(database: Database): CheckResult[] {
       'SELECT count(*) FROM api_keys WHERE revoked_at IS NULL AND revoked_by_user_id IS NOT NULL',
     ),
     zero('foreign keys intact', 'SELECT count(*) FROM pragma_foreign_key_check'),
+    // A raid split choice of an event that projected fine is shown by a drop
+    // (raids/choice-keys.ts). Counts only: choices hold nicknames and notes.
+    zero(
+      'raid_drop_choices: every choice of a projected event is shown by a drop',
+      'SELECT count(*) FROM raid_drop_choices c JOIN events USING (event_id) ' +
+        'WHERE events.processed_at IS NOT NULL AND events.projection_error IS NULL ' +
+        'AND NOT EXISTS (SELECT 1 FROM raid_special_loot r WHERE ' +
+        '(r.special_event_id = c.event_id AND c.item_index = 0) OR ' +
+        '(r.loot_event_id = c.event_id AND r.loot_item_position = c.item_index))',
+    ),
   ];
+}
+
+/** The split choices and the special loot keys of a database, before migrating. */
+interface ChoiceState {
+  rows: ChoiceRow[];
+  /** Drops with both an event key and a chest key. */
+  pairs: { specialEventId: string; lootEventId: string; lootItemPosition: number }[];
+}
+
+function choiceState(sqlite: BetterSqlite3.Database): ChoiceState | undefined {
+  const tables = userTables(sqlite);
+  if (!tables.includes('raid_drop_choices')) return undefined;
+  const rows = sqlite
+    .prepare(
+      'SELECT event_id AS eventId, item_index AS itemIndex, mode, own_value AS ownValue, ' +
+        'party_size AS partySize, nickname, note, updated_at AS updatedAt FROM raid_drop_choices',
+    )
+    .all() as ChoiceRow[];
+  const pairs = tables.includes('raid_special_loot')
+    ? (sqlite
+        .prepare(
+          'SELECT special_event_id AS specialEventId, loot_event_id AS lootEventId, ' +
+            'loot_item_position AS lootItemPosition FROM raid_special_loot ' +
+            'WHERE special_event_id IS NOT NULL AND loot_event_id IS NOT NULL',
+        )
+        .all() as ChoiceState['pairs'])
+    : [];
+  return { rows, pairs };
+}
+
+const choiceKey = (eventId: string, itemIndex: number) => `${eventId}.${String(itemIndex)}`;
+
+/** What `settleAllChoices` gives for `state`, worked out on its own. */
+function settledChoices({ rows, pairs }: ChoiceState): Map<string, ChoiceRow> {
+  const byKey = new Map(rows.map((row) => [choiceKey(row.eventId, row.itemIndex), row]));
+  for (const pair of pairs) {
+    const chestKey = choiceKey(pair.lootEventId, pair.lootItemPosition);
+    const chest = byKey.get(chestKey);
+    if (!chest) continue;
+    const eventKey = choiceKey(pair.specialEventId, 0);
+    const existing = byKey.get(eventKey);
+    byKey.delete(chestKey);
+    byKey.set(
+      eventKey,
+      existing
+        ? mergeChoices(existing, chest)
+        : { ...chest, eventId: pair.specialEventId, itemIndex: 0 },
+    );
+  }
+  return byKey;
+}
+
+/**
+ * The upgrade may move split choices and delete those of drops that are gone,
+ * but nothing else. Works out the rows it should leave (the rows before, moved
+ * to their event keys if the nearest-chest upgrade ran, without those whose
+ * event projected fine and whose drop no longer exists if the choices were
+ * tidied) and compares them with the rows after. Reports counts only.
+ */
+function choiceRowsCheck(
+  before: ChoiceState | undefined,
+  database: Database,
+  upgrade: UpgradeReport | undefined,
+): CheckResult {
+  const name = 'raid_drop_choices: only moved or removed as the upgrade should';
+  if (!before) return { name, ok: true };
+  const expected = upgrade?.projections.includes('raid-special-loot')
+    ? settledChoices(before)
+    : new Map(before.rows.map((row) => [choiceKey(row.eventId, row.itemIndex), row]));
+  if (upgrade?.tables.includes('raid_drop_choices')) {
+    const gone = database.sqlite.prepare(
+      'SELECT 1 FROM events WHERE event_id = ? AND processed_at IS NOT NULL ' +
+        'AND projection_error IS NULL AND NOT EXISTS (SELECT 1 FROM raid_special_loot r WHERE ' +
+        '(r.special_event_id = events.event_id AND ? = 0) OR ' +
+        '(r.loot_event_id = events.event_id AND r.loot_item_position = ?))',
+    );
+    for (const [key, row] of expected) {
+      if (gone.get(row.eventId, row.itemIndex, row.itemIndex) !== undefined) expected.delete(key);
+    }
+  }
+  const after = choiceState(database.sqlite)?.rows ?? [];
+  const rowText = (row: ChoiceRow) => JSON.stringify(row);
+  const left = new Map<string, number>();
+  for (const row of expected.values()) left.set(rowText(row), (left.get(rowText(row)) ?? 0) + 1);
+  let differing = 0;
+  for (const row of after) {
+    const count = left.get(rowText(row)) ?? 0;
+    if (count > 0) left.set(rowText(row), count - 1);
+    else differing += 1;
+  }
+  for (const count of left.values()) differing += count;
+  return differing === 0
+    ? { name, ok: true }
+    : { name, ok: false, detail: `${String(differing)} rows differ` };
 }
 
 /** Checks for a database migrated from before users (0020): everything is user 1's. */
@@ -278,6 +383,7 @@ export function checkMigration(
 ): MigrationCheckReport {
   const raw = new BetterSqlite3(file, { fileMustExist: true });
   let before: Map<string, TableState>;
+  let choicesBefore: ChoiceState | undefined;
   let hadUsers: boolean;
   let hadTwoFactor: boolean;
   // Columns a pending migration adds are left out: from before users (0020)
@@ -297,6 +403,7 @@ export function checkMigration(
       ...(hadTwoFactor ? {} : COLUMNS_ADDED_BY_TWO_FACTOR_MIGRATION),
     };
     before = tableStates(raw, ignore);
+    choicesBefore = choiceState(raw);
     // Without the columns a full rebuild sets again, in case the upgrade is one.
     for (const [table, columns] of Object.entries(REBUILT_COLUMNS)) {
       if (before.has(table)) {
@@ -342,6 +449,7 @@ export function checkMigration(
       ...(hadUsers ? [] : ownershipChecks(database)),
       ...(hadTwoFactor ? [] : [twoFactorOffCheck(database)]),
       ...consistencyChecks(database),
+      choiceRowsCheck(choicesBefore, database, database.upgrade),
     ];
 
     // One clock for both sides: the running server would have closed these

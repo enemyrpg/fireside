@@ -1080,8 +1080,9 @@ export const raidSplitDefaults = sqliteTable('raid_split_defaults', {
 /**
  * The user's choices for one detected purple, keyed by the drop's event: the
  * `raid.special_loot` event with index 0, or for a purple only seen in the
- * chest the `loot` event and the item's position. A chest purple whose
- * `SELF` event arrives later is looked up by both keys.
+ * chest the `loot` event and the item's position. When a chest purple's
+ * `SELF` event arrives, its row moves to the event key
+ * (docs/architecture.md#raid-split-choices).
  */
 export const raidDropChoices = sqliteTable(
   'raid_drop_choices',

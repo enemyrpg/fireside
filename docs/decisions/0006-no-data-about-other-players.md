@@ -28,4 +28,7 @@ a raid chat message.
 - Features that would need other players' data (party lists, comparisons with
   friends, public hiscores of others) are out.
 - Seed data and fixtures use made-up account names that can't be real players.
+- A nickname whose drop is definitely gone is deleted, so it doesn't stay
+  where nobody can see or clear it
+  ([0020](0020-raid-split-choice-keys.md)).
 - See [legal.md](../legal.md) and [data-collected.md](../data-collected.md).

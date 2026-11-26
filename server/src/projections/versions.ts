@@ -30,6 +30,7 @@ import {
   questCompletions,
   questSnapshots,
   questStates,
+  raidDropChoices,
   raidSpecialLoot,
   sessionAfkEstimates,
   sessionAfkPeriods,
@@ -142,6 +143,14 @@ export const REBUILT_TABLES: readonly string[] = [
   xpSnapshots,
 ].map((table) => getTableName(table));
 
+/**
+ * Tables that are not derived but that an upgrade by full rebuild may still
+ * change: the raid split choices of drops that are definitely gone are
+ * deleted, and before the upgrade to nearest-chest matching chest-key choices
+ * move to their drop's event key (raids/choice-keys.ts).
+ */
+export const REBUILD_SETTLED_TABLES: readonly string[] = [getTableName(raidDropChoices)];
+
 /** Columns of raw tables a full rebuild sets again: when each event was projected. */
 export const REBUILT_COLUMNS: Readonly<Record<string, string[]>> = {
   [getTableName(events)]: ['processed_at', 'projection_error'],
@@ -162,6 +171,7 @@ export function recomputeOutdated(
   const counts: Record<string, number> = {};
   const tables = new Set<string>([getTableName(projectionVersions)]);
   const columns: Record<string, string[]> = {};
+  for (const projection of outdated) Object.assign(counts, projection.beforeUpgrade?.(tx));
   if (outdated.every((projection) => projection.recompute !== undefined)) {
     for (const projection of outdated) {
       const result = projection.recompute?.(tx, { now: at });
@@ -176,7 +186,7 @@ export function recomputeOutdated(
       ...(log ? { log } : {}),
     });
     rebuildClog(tx, log);
-    for (const table of REBUILT_TABLES) tables.add(table);
+    for (const table of [...REBUILT_TABLES, ...REBUILD_SETTLED_TABLES]) tables.add(table);
     Object.assign(columns, REBUILT_COLUMNS);
     counts.events = result.processed;
     counts.failed = result.failed.length;
