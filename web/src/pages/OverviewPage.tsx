@@ -15,16 +15,15 @@ import {
   useSessions,
   useWeekly,
 } from '@/api/hooks';
-import { ActivityCalendar } from '@/components/ActivityCalendar';
+import { ActivityCalendar, ActivityCalendarPlaceholder } from '@/components/ActivityCalendar';
 import { Card, CardHeader } from '@/components/Card';
-import { HBarList } from '@/components/HBarList';
+import { HBarList, HBarListPlaceholder } from '@/components/HBarList';
 import { NetWorthCard } from '@/components/NetWorthCard';
 import { SkillIcon } from '@/components/SkillIcon';
 import { StatStrip, type StatStripItem } from '@/components/StatStrip';
-import { WeekDayBars } from '@/components/WeekDayBars';
+import { WeekDayBars, WeekDayBarsPlaceholder } from '@/components/WeekDayBars';
 import { AccountDot } from '@/components/shell/AccountDot';
-import { CardSkeleton, EmptyState, ErrorState } from '@/components/states';
-import { Skeleton } from '@/components/ui/skeleton';
+import { EmptyState, ErrorState, TextSkeleton } from '@/components/states';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import {
   formatAccountType,
@@ -38,6 +37,7 @@ import {
   formatSkill,
   parseLocalDate,
 } from '@/format';
+import { useDelayedFlag } from '@/hooks/useDelayedFlag';
 import { useFormat } from '@/hooks/useFormat';
 import { useIsDesktop } from '@/hooks/useIsDesktop';
 import { useLocalToday } from '@/hooks/useLocalToday';
@@ -46,6 +46,7 @@ import { accountColors, accountName, anyOnline, isOnline } from '@/lib/accounts'
 import { calendarRange, daysPlayedLabel } from '@/lib/calendar';
 import { hasLiveSession, onlineLine, OVERVIEW_SESSION_LIMIT, weekDayBars } from '@/lib/overview';
 import { weekDates } from '@/lib/time';
+import { cn } from '@/lib/utils';
 import { skillsTrained } from './xp/gains-rows';
 import { useAccountScope } from '@/routing/useAccountScope';
 import { Latest } from './home/Latest';
@@ -96,6 +97,31 @@ function weekRangeText(week: string, localDate: (value: string) => string): stri
   return `${start} – ${localDate(sunday)}`;
 }
 
+/** The size of an account chip, shared with its placeholder. */
+const CHIP =
+  'inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-table max-desk:min-h-11';
+
+/** The PC day bars: 340 px at most (`StatStrip`'s `aside`). */
+const DAY_BARS_PC = 'max-w-[340px] min-w-60';
+
+/** One row of chips while the accounts load, so the strip under it doesn't move. */
+function AccountChipsPlaceholder() {
+  const shown = useDelayedFlag(true);
+  return (
+    <div aria-busy="true" aria-label="Loading" className="flex gap-2">
+      {[0, 1].map((index) => (
+        <span
+          key={index}
+          data-testid="account-chip-placeholder"
+          className={cn(CHIP, 'w-28 border-transparent', shown ? 'animate-pulse bg-hover' : '')}
+        >
+          {'\u00a0'}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 /** Account chips for `all`: a link to each account's Home, online or not. */
 function AccountChips({ accounts }: { accounts: readonly AccountSummary[] }) {
   const format = useFormat();
@@ -113,7 +139,10 @@ function AccountChips({ accounts }: { accounts: readonly AccountSummary[] }) {
                 <TooltipTrigger asChild>
                   <Link
                     to={`/${String(account.id)}`}
-                    className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1 text-table max-desk:min-h-11 text-text hover:border-accent hover:no-underline"
+                    className={cn(
+                      CHIP,
+                      'border-border bg-card text-text hover:border-accent hover:no-underline',
+                    )}
                   >
                     <AccountDot color={colors.get(account.id) ?? 'var(--afk)'} />
                     {accountName(account)}
@@ -289,10 +318,17 @@ function WeekStrip({
       : weekDayBars(weekDates(week.week).monday, buckets, today);
   const dayBars =
     bars === undefined ? undefined : desktop ? (
-      <WeekDayBars bars={bars} className="max-w-[340px] min-w-60" />
+      <WeekDayBars bars={bars} className={DAY_BARS_PC} />
     ) : (
       <WeekDayBars bars={bars} compact />
     );
+  // The bars' box from the first frame until they arrive; nothing after they failed.
+  const barsPlaceholder = desktop ? (
+    <WeekDayBarsPlaceholder className={DAY_BARS_PC} />
+  ) : (
+    <WeekDayBarsPlaceholder compact />
+  );
+  const barsSlot = dayBars ?? (screentime.isError ? undefined : barsPlaceholder);
 
   return (
     <section
@@ -307,10 +343,12 @@ function WeekStrip({
           >
             This week
           </h2>
-          {week && (
+          {week ? (
             <span className="text-table text-text-3 max-desk:hidden">
               {formatIsoWeek(week.week)} · {weekRangeText(week.week, format.localDate)}
             </span>
+          ) : weekly.isError ? null : (
+            <TextSkeleton className="inline-block w-44 text-table max-desk:hidden" />
           )}
         </div>
         {inView !== undefined ? (
@@ -326,12 +364,18 @@ function WeekStrip({
         ) : accounts.isError ? (
           <ErrorState className="min-h-0 flex-row p-0" onRetry={() => void accounts.refetch()} />
         ) : (
-          <Skeleton className="h-4 w-48 rounded-md" />
+          // The online line's own text size, so the row keeps its height.
+          <TextSkeleton className="inline-block w-48 text-xs desk:text-table" />
         )}
       </div>
-      {scope === 'all' && inView !== undefined && inView.length > 0 && (
-        <AccountChips accounts={inView} />
-      )}
+      {scope === 'all' &&
+        (inView === undefined ? (
+          accounts.isError ? null : (
+            <AccountChipsPlaceholder />
+          )
+        ) : (
+          inView.length > 0 && <AccountChips accounts={inView} />
+        ))}
       <StatStrip
         label="This week’s numbers"
         size="hero"
@@ -345,14 +389,20 @@ function WeekStrip({
           ) : undefined
         }
         {...(desktop
-          ? { aside: dayBars && <div className="w-[340px] max-w-full">{dayBars}</div> }
-          : { beside: dayBars })}
+          ? {
+              aside: barsSlot && <div className="w-[340px] max-w-full">{barsSlot}</div>,
+              loadingAside: <div className="w-[340px] max-w-full">{barsPlaceholder}</div>,
+            }
+          : { beside: barsSlot, loadingBeside: barsPlaceholder })}
       />
     </section>
   );
 }
 
 // --- Top skills ---------------------------------------------------------------------------
+
+/** Skills in the card: the server sends the week's top three (`weekly`). */
+const TOP_SKILLS = 3;
 
 function TopSkillsCard({ scope, live }: { scope: AccountScope; live: boolean }) {
   // The strip's own query (same key), so this is no extra request.
@@ -364,7 +414,7 @@ function TopSkillsCard({ scope, live }: { scope: AccountScope; live: boolean }) 
     body = query.isError ? (
       <ErrorState onRetry={() => void query.refetch()} />
     ) : (
-      <CardSkeleton lines={3} />
+      <HBarListPlaceholder rows={TOP_SKILLS} />
     );
   } else if (week.xp === null || week.xp.topSkills.length === 0) {
     body = <EmptyState>No XP gained this week yet.</EmptyState>;
@@ -424,7 +474,7 @@ function ActivityCard({ scope, live }: { scope: AccountScope; live: boolean }) {
         query.isError ? (
           <ErrorState onRetry={() => void query.refetch()} />
         ) : (
-          <CardSkeleton lines={5} />
+          <ActivityCalendarPlaceholder />
         )
       ) : (
         <ActivityCalendar today={today} days={query.data.days} />

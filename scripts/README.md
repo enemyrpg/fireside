@@ -18,6 +18,11 @@ Tooling that is not part of the server or dashboard runtime.
   - `SNAPSHOT_README=1` – only the README screenshots, into `docs/screenshots/`.
 - `csp-check/` – runs the built dashboard in Chromium with the server's
   Content-Security-Policy (`pnpm test:csp`).
+- `cls-check/` – measures the layout shift (CLS) of Home while its cards
+  load: seed data, PC (1440 px) and mobile (390 px with touch), account 1 and
+  All accounts, Fast 4G and a 4× slower CPU, the median of 5 runs, and the
+  elements that moved (`pnpm test:cls`, after `pnpm build`). Run by hand, not
+  in CI: single runs vary too much. Options are listed at the top of the file.
 - `docs-check/` – checks that relative links in the Markdown files resolve
   (anchors included) and that `docs/self-hosting.md` lists exactly the
   variables in `.env.example`: `node scripts/docs-check/check-docs.ts`. Runs

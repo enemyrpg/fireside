@@ -11,8 +11,9 @@ const { Component: Sparkline } = lazyNamed(() => import('@/components/Sparkline'
 /**
  * Takes exactly the space of the chart, labels included, so nothing moves
  * when it is drawn. The skeleton appears only after 200 ms, like every other.
+ * Also the line's place while its data loads (`NetWorthCard`).
  */
-function SparklineSkeleton({ variant = 'line', startLabel, endLabel }: SparklineProps) {
+export function SparklineSkeleton({ variant = 'line', startLabel, endLabel }: SparklineProps) {
   const shown = useDelayedFlag(true);
   const height = variant === 'area' ? SPARKLINE_AREA_HEIGHT : SPARKLINE_HEIGHT;
   const box = (

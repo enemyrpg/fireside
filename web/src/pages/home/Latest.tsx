@@ -9,7 +9,7 @@ import { ItemIcon } from '@/components/ItemIcon';
 import { SegmentedFilter } from '@/components/Segmented';
 import { SkillIcon } from '@/components/SkillIcon';
 import { AccountDot } from '@/components/shell/AccountDot';
-import { CardSkeleton, EmptyState, ErrorState } from '@/components/states';
+import { EmptyState, ErrorState, TextSkeleton } from '@/components/states';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -18,6 +18,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { formatCompact, formatDuration, formatGpExact, formatInt, formatSkill } from '@/format';
+import { useDelayedFlag } from '@/hooks/useDelayedFlag';
 import { useFormat } from '@/hooks/useFormat';
 import { useIsDesktop } from '@/hooks/useIsDesktop';
 import { accountColors, accountNameById } from '@/lib/accounts';
@@ -28,6 +29,7 @@ import {
   FEED_FILTERS,
   isOpenSession,
   LATEST_MAX_PAGES,
+  LATEST_ROWS,
   latestFeed,
   parseFeedFilter,
   pickSession,
@@ -80,6 +82,20 @@ interface RowContext {
   accountOf: ((accountId: number) => { name: string; color: string }) | undefined;
 }
 
+// The sizes of a row and a day, shared with `LatestPlaceholder` so it has the
+// loaded list's height from the first frame (docs/design.md, "Loading").
+const ROW_ITEM = 'border-t border-grid first:border-t-0';
+const ROW_GRID =
+  'grid min-h-14 grid-cols-[36px_minmax(0,1fr)_auto] items-center gap-3 px-3.5 py-2 desk:min-h-0 desk:grid-cols-[52px_36px_minmax(0,1fr)_auto] desk:gap-3.5 desk:px-[18px] desk:py-3.5';
+const ROW_TIME = 'font-mono text-xs max-desk:hidden';
+const ROW_LINES = 'flex min-w-0 flex-col gap-px desk:gap-0.5';
+const ROW_TITLE = 'font-medium';
+const ROW_META = 'text-xs desk:text-[12.5px]';
+const ICON_BOX = 'h-8 w-9 rounded-[7px]';
+const DAY = 'flex flex-col gap-1.5 desk:gap-2';
+const DAY_HEADING = 'm-0 px-0.5 text-xs font-semibold text-text-3 desk:px-1 desk:text-table';
+const DAY_LIST = 'm-0 list-none overflow-hidden rounded-[14px] border border-border bg-card p-0';
+
 /** The frame of every row: time, icon box, two lines and a value, all one link. */
 function Row({
   to,
@@ -123,17 +139,18 @@ function Row({
     .map((part) => (isDeskPart(part) ? part : { node: part, desk: false }))
     .filter(({ node }) => node !== null && node !== undefined && node !== false && node !== '');
   return (
-    <li className="border-t border-grid first:border-t-0">
+    <li className={ROW_ITEM}>
       <Link
         to={to}
-        className="grid min-h-14 grid-cols-[36px_minmax(0,1fr)_auto] items-center gap-3 px-3.5 py-2 text-text no-underline hover:bg-hover hover:text-text hover:no-underline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent desk:min-h-0 desk:grid-cols-[52px_36px_minmax(0,1fr)_auto] desk:gap-3.5 desk:px-[18px] desk:py-3.5"
+        className={cn(
+          ROW_GRID,
+          'text-text no-underline hover:bg-hover hover:text-text hover:no-underline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent',
+        )}
       >
-        <span className="font-mono text-xs whitespace-nowrap text-text-3 tabular-nums max-desk:hidden">
-          {time}
-        </span>
+        <span className={cn(ROW_TIME, 'whitespace-nowrap text-text-3 tabular-nums')}>{time}</span>
         {icon}
-        <span className="flex min-w-0 flex-col gap-px desk:gap-0.5">
-          <span className="flex min-w-0 items-center gap-1.5 font-medium">
+        <span className={ROW_LINES}>
+          <span className={cn(ROW_TITLE, 'flex min-w-0 items-center gap-1.5')}>
             <span className="truncate">{title}</span>
             {badge}
             {tag !== undefined && (
@@ -150,7 +167,7 @@ function Row({
             )}
           </span>
           {/* One line of inline text, cut with "…" at the end. */}
-          <span className="truncate text-xs text-text-3 desk:text-[12.5px]">
+          <span className={cn(ROW_META, 'truncate text-text-3')}>
             <span className="tabular-nums desk:hidden">{mobileTime}</span>
             {account && (
               <>
@@ -197,7 +214,8 @@ function IconBox({ session = false, children }: { session?: boolean; children: R
     <span
       aria-hidden="true"
       className={cn(
-        'flex h-8 w-9 items-center justify-center rounded-[7px]',
+        ICON_BOX,
+        'flex items-center justify-center',
         session ? 'border border-(--heat-2) bg-accent-wash text-accent-text' : 'bg-raised',
       )}
     >
@@ -295,10 +313,41 @@ function PinnedSession({ group, context }: { group: SessionGroup; context: RowCo
   }, [detail]);
   return (
     <section aria-label="Live session">
-      <ul className="m-0 list-none overflow-hidden rounded-[14px] border border-border bg-card p-0">
+      <ul className={DAY_LIST}>
         <SessionRowItem group={group} at={group.startedAt} extra={extra} context={context} />
       </ul>
     </section>
+  );
+}
+
+/**
+ * A day of `LATEST_ROWS` empty rows while the feed loads: the loaded list's
+ * height from the first frame (with one day heading; each further day of the
+ * loaded list adds its heading), with skeletons after 200 ms.
+ */
+function LatestPlaceholder() {
+  const shown = useDelayedFlag(true);
+  return (
+    <div aria-busy="true" aria-label="Loading" className={DAY}>
+      <div className={DAY_HEADING}>
+        <TextSkeleton className="inline-block w-36" />
+      </div>
+      <ul className={DAY_LIST}>
+        {Array.from({ length: LATEST_ROWS }, (_, index) => (
+          <li key={index} data-testid="latest-placeholder-row" className={ROW_ITEM}>
+            <div className={ROW_GRID}>
+              <TextSkeleton className={cn(ROW_TIME, 'inline-block w-10')} />
+              <span className={cn(ICON_BOX, shown ? 'animate-pulse bg-hover' : '')} />
+              <span className={ROW_LINES}>
+                <TextSkeleton className={cn(ROW_TITLE, 'block w-3/5')} />
+                <TextSkeleton className={cn(ROW_META, 'block w-2/5')} />
+              </span>
+              <span />
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -533,32 +582,32 @@ export function Latest({
 
   let body: ReactNode;
   if (latest === undefined) {
-    body = (
+    body = feed.isError ? (
       <Card>
-        {feed.isError ? (
-          <ErrorState onRetry={() => void feed.refetch()} />
-        ) : (
-          <CardSkeleton lines={5} />
-        )}
+        <ErrorState onRetry={() => void feed.refetch()} />
       </Card>
+    ) : (
+      <LatestPlaceholder />
     );
   } else {
     const pinned = pinnedShown ? latest.pinned : undefined;
     body =
       pinned === undefined && latest.days.length === 0 ? (
-        <Card>
-          {/* Still looking in the next page: not empty yet. */}
-          {needsMore ? <CardSkeleton lines={5} /> : <EmptyState>{filter.empty}</EmptyState>}
-        </Card>
+        // Still looking in the next page: not empty yet.
+        needsMore ? (
+          <LatestPlaceholder />
+        ) : (
+          <Card>
+            <EmptyState>{filter.empty}</EmptyState>
+          </Card>
+        )
       ) : (
         <>
           {pinned && <PinnedSession group={pinned} context={context} />}
           {latest.days.map((day) => (
-            <section key={day.date} className="flex flex-col gap-1.5 desk:gap-2">
-              <h3 className="m-0 px-0.5 text-xs font-semibold text-text-3 desk:px-1 desk:text-table">
-                {format.localDate(day.date)}
-              </h3>
-              <ul className="m-0 list-none overflow-hidden rounded-[14px] border border-border bg-card p-0">
+            <section key={day.date} className={DAY}>
+              <h3 className={DAY_HEADING}>{format.localDate(day.date)}</h3>
+              <ul className={DAY_LIST}>
                 {day.rows.map((row) =>
                   row.kind === 'session' ? (
                     <SessionRowItem key={row.key} group={row.group} at={row.at} context={context} />

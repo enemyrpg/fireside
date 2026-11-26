@@ -146,7 +146,8 @@ left: a feed of sessions, drops over 1M, new collection log items, level-ups
 and pets, per local day, with a filter in `?show=`, six rows and then a link to
 the page with the rest. An ongoing session is pinned on top with a Live badge.
 World hops are merged into one row, and short empty sessions are left out. On
-the right the net worth card and the top three skills this week. At the bottom
+the right the net worth card (only when an account has bank data) and the top
+three skills this week. At the bottom
 the activity calendar for the last 365 days. A new instance without accounts
 shows a welcome in three numbered steps instead (create a key, install the
 plugin, log in to the game).
@@ -563,6 +564,34 @@ An invitation, not an apology: one sentence, and an action where it fits.
 - A skeleton in the shape of the content, per card. Never a spinner for the
   whole page.
 - Skeletons show after 200 ms, so fast answers don't flash.
+- **Every card reserves its final size from the first frame.** Until the
+  skeleton shows, a loading card is an empty box, so the box itself must
+  already have the loaded card's size; the skeleton only fills it and never
+  sets it. The placeholder is the card's own frame with the same lines, rows
+  and text sizes as the loaded content (a no-break space in the text's classes
+  holds a line), not a guess in pixels. On Home: the "This week" numbers, the
+  online line and the day bars, six rows of Latest under one day, three rows
+  of Top skills, the net worth card and the calendar. A card that is hidden
+  without data (net worth) keeps its place while it loads and collapses only
+  once the answer says there is no data. Checked by
+  hand with `pnpm test:cls` (layout shift on Home ≤ 0.1, see
+  [scripts/README.md](../scripts/README.md)).
+- While the dashboard waits for the server's `health`, the content area is at
+  least a screen high, so the footer doesn't jump down when the page renders
+  (not after `health` failed: the error is then all there is).
+- **Known limits on Home.** A placeholder can only reserve what is known before
+  the answer arrives, so these can still move, and are accepted:
+  - **Account chips (All accounts):** the placeholder is one row of two chips.
+    Many accounts or long names wrap to a second row. The account list is
+    normally there before Home draws, so the placeholder is rarely seen; a
+    wrapping placeholder would only be another guess.
+  - **Net worth on one account's Home:** the card keeps its place until the
+    summary answers. When some account has bank data but this one has none, it
+    then collapses and Top skills moves up. Whether an account has bank data is
+    not known before its summary arrives.
+  - **Top skills** reserves three rows; a week with fewer trained skills (or
+    none, the empty state) ends shorter. **Latest** reserves six rows under one
+    day; each further day adds its heading, and the card grows below.
 - Every page except Home loads its own code the first time it is opened. Until
   it is there, the page shows a skeleton in its rough shape: a grid of cards, one
   long list card, or the settings menu with cards beside it. The header and

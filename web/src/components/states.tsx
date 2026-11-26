@@ -70,3 +70,21 @@ export function CardSkeleton({ lines = 3, className }: { lines?: number; classNa
     </div>
   );
 }
+
+/**
+ * A line of text that hasn't loaded. A no-break space in the text's own classes
+ * (`className`: size, line height, `block` or `inline-block`, width) holds the
+ * line's final height from the first frame; the bar only covers it, after
+ * 200 ms, and never sets its size (docs/design.md, "Loading").
+ */
+export function TextSkeleton({ className }: { className?: string }) {
+  const shown = useDelayedFlag(true);
+  return (
+    <span aria-hidden="true" data-testid="text-skeleton" className={cn('relative', className)}>
+      {' '}
+      <Skeleton
+        className={cn('absolute inset-x-0 inset-y-[15%] rounded-md', !shown && 'invisible')}
+      />
+    </span>
+  );
+}

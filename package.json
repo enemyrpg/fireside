@@ -14,6 +14,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:csp": "node scripts/csp-check/check-csp.ts",
+    "test:cls": "node scripts/cls-check/check-cls.ts",
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",
     "typecheck": "tsc --noEmit && pnpm -r typecheck",

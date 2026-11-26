@@ -12,6 +12,7 @@ import { PageControlsContext } from './page-controls-context';
 import { PageHeader } from './PageHeader';
 import { ServerDownBanner } from './ServerDownBanner';
 import { TopBar } from './TopBar';
+import { cn } from '@/lib/utils';
 
 export interface AppShellProps {
   /** The registry page of the current route (none on the 404 page). */
@@ -61,7 +62,15 @@ export function AppShell({ page, destinationRoute, headingRef, scope, children }
         className="hidden desk:flex"
       />
       <ServerDownBanner />
-      <main className="safe-x mx-auto w-full max-w-[1376px] flex-1 pt-3.5 pb-6 desk:pt-8 desk:pr-[max(32px,var(--safe-right))] desk:pb-10 desk:pl-[max(32px,var(--safe-left))]">
+      <main
+        className={cn(
+          'safe-x mx-auto w-full max-w-[1376px] flex-1 pt-3.5 pb-6 desk:pt-8 desk:pr-[max(32px,var(--safe-right))] desk:pb-10 desk:pl-[max(32px,var(--safe-left))]',
+          // While the page waits for `health`, the footer stays below the fold, so it doesn't
+          // jump down off the screen when the page renders (docs/design.md, "Loading").
+          // Not after it failed: the error is all there is, so nothing will move.
+          health.isPending && 'min-h-svh',
+        )}
+      >
         <PageHeader
           page={page}
           destination={destination}
