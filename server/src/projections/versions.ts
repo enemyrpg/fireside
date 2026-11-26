@@ -144,9 +144,10 @@ export const REBUILT_TABLES: readonly string[] = [
 ].map((table) => getTableName(table));
 
 /**
- * Tables that are not derived but that a full rebuild may still change:
- * the raid split choices move to the key of the drop they belong to, and
- * those of drops that are definitely gone are deleted (raids/choice-keys.ts).
+ * Tables that are not derived but that an upgrade by full rebuild may still
+ * change: the raid split choices of drops that are definitely gone are
+ * deleted, and before the upgrade to nearest-chest matching chest-key choices
+ * move to their drop's event key (raids/choice-keys.ts).
  */
 export const REBUILD_SETTLED_TABLES: readonly string[] = [getTableName(raidDropChoices)];
 
@@ -170,6 +171,7 @@ export function recomputeOutdated(
   const counts: Record<string, number> = {};
   const tables = new Set<string>([getTableName(projectionVersions)]);
   const columns: Record<string, string[]> = {};
+  for (const projection of outdated) Object.assign(counts, projection.beforeUpgrade?.(tx));
   if (outdated.every((projection) => projection.recompute !== undefined)) {
     for (const projection of outdated) {
       const result = projection.recompute?.(tx, { now: at });

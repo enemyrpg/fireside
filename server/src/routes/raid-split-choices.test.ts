@@ -87,7 +87,7 @@ const rebuild = (projections: readonly Projection[] = PROJECTIONS) =>
 const reprocess = () => retryFailedEvents(run.database.db, { now: () => clock });
 
 describe('split choices across failures and rebuilds', () => {
-  it('keeps a choice made on the chest fallback when the event is retried (merged, newest wins)', async () => {
+  it('reads both rows after a retry without moving them, and an edit collapses them', async () => {
     const f = eventFactory();
     const chest = f.loot('19:00', { source: TOA, items: [coins, fangItem] });
     const special = f.raidSpecialLoot('19:00', { item: FANG, teamSize: 3 });
@@ -110,21 +110,69 @@ describe('split choices across failures and rebuilds', () => {
     later();
     await patched(`${chest.eventId}.1`, { note: 'new note', mode: 'FFA' });
 
-    // Fixed and retried: one drop, one row; the newer note wins, the empty own
-    // value does not clear the older one.
+    // Fixed and retried: one drop showing both rows merged (the newer note
+    // wins, the empty own value does not hide the older one), still two rows.
     expect(reprocess().failed).toEqual([]);
-    const [drop] = (await splits()).drops.items;
-    expect(drop).toMatchObject({
+    const merged = {
       dropId: special.eventId,
       note: 'new note',
       mode: 'FFA',
       overridden: true,
       ownValue: 20_000_000,
+    };
+    expect((await splits()).drops.items).toEqual([expect.objectContaining(merged)]);
+    expect(choiceRows()).toHaveLength(2);
+    expect(rebuild().failed).toEqual([]);
+    expect(choiceRows()).toHaveLength(2);
+
+    // The owner's edit stores what they saw plus the change under the event key.
+    later();
+    expect(await patched(special.eventId, { partySize: 4 })).toMatchObject({
+      ...merged,
+      partySize: 4,
     });
     expect(choiceRows()).toEqual([{ eventId: special.eventId, itemIndex: 0 }]);
   });
 
-  it('moves a chest choice to the event when the event is retried after failing on ingest', async () => {
+  it('keeps a field the owner cleared empty when the drop had two rows', async () => {
+    const f = eventFactory();
+    const chest = f.loot('19:00', { source: TOA, items: [fangItem] });
+    const special = f.raidSpecialLoot('19:00', { item: FANG, teamSize: 3 });
+    start([f.sessionStart('18:00'), chest, special]);
+    // Two rows without an edit: the older event row has the note, the newer
+    // chest row an own value.
+    run.database.db
+      .insert(raidDropChoices)
+      .values([
+        {
+          eventId: special.eventId,
+          itemIndex: 0,
+          note: 'old note',
+          updatedAt: '2026-11-09T10:00:00.000Z',
+        },
+        {
+          eventId: chest.eventId,
+          itemIndex: 0,
+          ownValue: 5,
+          updatedAt: '2026-11-09T11:00:00.000Z',
+        },
+      ])
+      .run();
+    expect((await splits()).drops.items).toEqual([
+      expect.objectContaining({ dropId: special.eventId, note: 'old note', ownValue: 5 }),
+    ]);
+
+    // The owner clears the note, which only the older row had.
+    later();
+    await patched(special.eventId, { note: null });
+    const cleared = { dropId: special.eventId, note: null, ownValue: 5 };
+    expect((await splits()).drops.items).toEqual([expect.objectContaining(cleared)]);
+    expect(choiceRows()).toEqual([{ eventId: special.eventId, itemIndex: 0 }]);
+    expect(rebuild().failed).toEqual([]);
+    expect((await splits()).drops.items).toEqual([expect.objectContaining(cleared)]);
+  });
+
+  it('shows a chest choice on the event’s drop after a retry, still under the chest key', async () => {
     const f = eventFactory();
     const chest = f.loot('19:00', { source: TOA, items: [fangItem] });
     const special = f.raidSpecialLoot('19:00', { item: FANG, teamSize: 3 });
@@ -135,17 +183,53 @@ describe('split choices across failures and rebuilds', () => {
     await patched(`${chest.eventId}.0`, { note: 'from the chest' });
 
     expect(reprocess().failed).toEqual([]);
-    expect((await splits()).drops.items).toEqual([
-      expect.objectContaining({ dropId: special.eventId, note: 'from the chest' }),
-    ]);
-    expect(choiceRows()).toEqual([{ eventId: special.eventId, itemIndex: 0 }]);
-
-    // And it stays there through a rebuild.
+    const shown = [expect.objectContaining({ dropId: special.eventId, note: 'from the chest' })];
+    expect((await splits()).drops.items).toEqual(shown);
+    expect(choiceRows()).toEqual([{ eventId: chest.eventId, itemIndex: 0 }]);
     expect(rebuild().failed).toEqual([]);
-    expect((await splits()).drops.items).toEqual([
-      expect.objectContaining({ dropId: special.eventId, note: 'from the chest' }),
-    ]);
+    expect((await splits()).drops.items).toEqual(shown);
+    expect(choiceRows()).toEqual([{ eventId: chest.eventId, itemIndex: 0 }]);
   });
+
+  // Two fangs in one session: the first only known from its chest, with a
+  // note. The second fang's event comes before its own chest, so for a while
+  // it is matched with the first chest. Once its chest arrives the note must
+  // be on the first fang again, whether the event came in by ingest, by a
+  // retry or by a rebuild.
+  it.each(['ingest', 'reprocess', 'rebuild'] as const)(
+    'keeps a chest choice on its fang when another fang’s event comes before its chest (%s)',
+    async (path) => {
+      const f = eventFactory();
+      const firstChest = f.loot('19:00', { source: TOA, items: [fangItem] });
+      const special = f.raidSpecialLoot('19:40', { item: FANG, teamSize: 3 });
+      const secondChest = f.loot('19:41', { source: TOA, items: [fangItem] });
+      start([f.sessionStart('18:00'), firstChest]);
+      await patched(`${firstChest.eventId}.0`, { note: 'first fang' });
+
+      if (path === 'reprocess') {
+        ingestBatch(run, [special], [...PROJECTIONS, failingFor(new Set([special.eventId]))]);
+        expect(reprocess().failed).toEqual([]);
+      } else {
+        ingestBatch(run, [special]);
+        if (path === 'rebuild') expect(rebuild().failed).toEqual([]);
+      }
+      // For now the event is matched with the only fang chest.
+      expect((await splits()).drops.items).toEqual([
+        expect.objectContaining({ dropId: special.eventId, note: 'first fang' }),
+      ]);
+
+      ingestBatch(run, [secondChest]);
+      const expected = [
+        expect.objectContaining({ dropId: special.eventId, note: null }),
+        expect.objectContaining({ dropId: `${firstChest.eventId}.0`, note: 'first fang' }),
+      ];
+      expect((await splits()).drops.items).toEqual(expected);
+      // A rebuild replays the event before its chest too.
+      expect(rebuild().failed).toEqual([]);
+      expect((await splits()).drops.items).toEqual(expected);
+      expect(choiceRows()).toEqual([{ eventId: firstChest.eventId, itemIndex: 0 }]);
+    },
+  );
 
   it('keeps a teammate nickname while its event fails, and shows it again once retried', async () => {
     const f = eventFactory();
@@ -193,7 +277,10 @@ describe('split choices across failures and rebuilds', () => {
     const f = eventFactory();
     const chest = f.loot('19:00', { source: TOA, items: [coins, fangItem] });
     const failing = f.loot('19:30', { source: TOA, items: [coins, fangItem] });
-    start([f.sessionStart('18:00'), chest, failing]);
+    start(
+      [f.sessionStart('18:00'), chest, failing],
+      [...PROJECTIONS, failingFor(new Set([failing.eventId]))],
+    );
     // Choices under the coins' positions: as if the item had stopped being a
     // purple (game data changed). One chest is fine, the other fails.
     const at = clock.toISOString();
@@ -210,6 +297,14 @@ describe('split choices across failures and rebuilds', () => {
       info: () => undefined,
       warn: (obj: object, msg: string) => warnings.push({ obj, msg }),
     };
+
+    // A retry that projects nothing (the event fails again) removes nothing.
+    retryFailedEvents(run.database.db, {
+      projections: [...PROJECTIONS, failingFor(new Set([failing.eventId]))],
+      now: () => clock,
+      log,
+    });
+    expect(choiceRows()).toHaveLength(3);
 
     rebuildDerivedTables(run.database.db, {
       projections: [...PROJECTIONS, failingFor(new Set([failing.eventId]))],

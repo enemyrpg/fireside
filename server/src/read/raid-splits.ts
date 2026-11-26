@@ -31,6 +31,7 @@ import {
   raidSplitDefaults,
 } from '../db/schema.js';
 import { capLootValue } from '../projections/session-summaries.js';
+import { mergeChoices, type ChoiceRow } from '../raids/choice-keys.js';
 import { cursorParts, decodeCursor, encodeCursor } from './cursor.js';
 import { chestEvent, chestItem, purpleGePrice, purpleQuantity, specialScope } from './raids.js';
 
@@ -58,10 +59,13 @@ export type DropStorage =
   | { kind: 'manual'; id: string }
   | {
       kind: 'event';
-      /** The key a new choices row gets. */
+      /** The key the drop's choices are written under: its event's, else its chest's. */
       key: ChoiceKey;
-      /** The row in effect now, if any (may be under the chest key after a key move). */
-      stored: ChoiceKey | undefined;
+      /**
+       * The drop's chest key if it also has an event key. Rows under it are
+       * read too, and an edit removes them (merged into the row under `key`).
+       */
+      chestKey: ChoiceKey | undefined;
     };
 
 export interface ChoiceKey {
@@ -363,16 +367,18 @@ export function trackedDrops(db: Queryable, accountIds: readonly number[]): Trac
   const defaults = storedDefaults(db, accountIds);
   const defaultOf = (accountId: number) => defaults.get(accountId) ?? DEFAULT_SPLIT_MODE;
 
-  const choices = new Map<string, DropChoices>();
-  for (const row of db.select().from(raidDropChoices).all()) {
-    choices.set(choiceMapKey(row), {
-      mode: modeOf(row.mode),
-      ownValue: row.ownValue,
-      partySize: row.partySize,
-      nickname: row.nickname,
-      note: row.note,
-    });
-  }
+  const choices = new Map<string, ChoiceRow>();
+  for (const row of db.select().from(raidDropChoices).all()) choices.set(choiceMapKey(row), row);
+  const choicesOf = (row: ChoiceRow | undefined): DropChoices =>
+    row
+      ? {
+          mode: modeOf(row.mode),
+          ownValue: row.ownValue,
+          partySize: row.partySize,
+          nickname: row.nickname,
+          note: row.note,
+        }
+      : NO_CHOICES;
 
   // The same rows and LEFT JOIN as the special loot list in `raids.ts`.
   const detected = db
@@ -411,12 +417,13 @@ export function trackedDrops(db: Queryable, accountIds: readonly number[]): Trac
     // Every row has one of the two events.
     if (!key) continue;
     const chestDropId = chestKey ? choiceMapKey(chestKey) : undefined;
-    // Choices made while the purple was only known from the chest move to the
-    // event key when the event is projected (raids/choice-keys.ts). Until then,
-    // and for a database not yet upgraded, the chest key is read too.
-    const stored = [eventKey, chestKey].find(
-      (candidate) => candidate && choices.has(choiceMapKey(candidate)),
-    );
+    // Choices made while the purple was only known from the chest stay under
+    // the chest key until the owner edits the drop: the chest an event is
+    // matched with can still change. Both rows are read and merged
+    // (docs/decisions/0020-raid-split-choice-keys.md).
+    const eventRow = choices.get(choiceMapKey(key));
+    const chestRow = eventKey && chestKey ? choices.get(choiceMapKey(chestKey)) : undefined;
+    const merged = eventRow && chestRow ? mergeChoices(eventRow, chestRow) : (eventRow ?? chestRow);
     drops.push({
       drop: trackedDrop(
         {
@@ -435,12 +442,12 @@ export function trackedDrops(db: Queryable, accountIds: readonly number[]): Trac
           teamSize: row.teamSize,
           killCount: row.killCount,
         },
-        (stored && choices.get(choiceMapKey(stored))) ?? NO_CHOICES,
+        choicesOf(merged),
         defaultOf(row.accountId),
       ),
       keyId: key.eventId,
       keyIndex: key.itemIndex,
-      storage: { kind: 'event', key, stored },
+      storage: { kind: 'event', key, chestKey: eventKey ? chestKey : undefined },
       chestDropId: eventKey ? chestDropId : undefined,
     });
   }

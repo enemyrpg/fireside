@@ -20,7 +20,6 @@ import {
   type DropChoices,
 } from '../read/raid-splits.js';
 import { characterCount, UNSAFE_TEXT_CHARS } from '../text.js';
-import { settleDrop } from './choice-keys.js';
 
 // Writes for the raid loot split tracker: the user's own choices, stored outside raw
 // events and derived tables. Nicknames and notes must never be logged: nothing here logs,
@@ -132,16 +131,11 @@ export function updateDropChoices(
         .where(eq(raidManualDrops.id, storage.id))
         .run();
     } else {
-      // Choices still under the chest key move to the event key first, so
-      // the drop has one row, under the key that stays.
-      const { key, stored } = storage;
-      if (stored && (stored.eventId !== key.eventId || stored.itemIndex !== key.itemIndex)) {
-        settleDrop(tx, {
-          specialEventId: key.eventId,
-          lootEventId: stored.eventId,
-          lootItemPosition: stored.itemIndex,
-        });
-      }
+      // The edit collapses the drop's rows: what the owner saw (both keys
+      // merged) plus the changes is the whole row under `key`, and the chest
+      // row goes. A field the owner cleared stays cleared.
+      const { key, chestKey } = storage;
+      if (chestKey) tx.delete(raidDropChoices).where(choiceRow(chestKey)).run();
       if (Object.values(next).every((value) => value === null)) {
         // Nothing set: no row, so the table only holds real choices.
         tx.delete(raidDropChoices).where(choiceRow(key)).run();

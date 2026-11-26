@@ -2,38 +2,34 @@ import { and, eq, inArray, isNotNull, isNull, notExists, or, sql } from 'drizzle
 import type { Queryable } from '../db/index.js';
 import { events, raidDropChoices, raidSpecialLoot } from '../db/schema.js';
 
-// Keeps the user's split choices (`raid_drop_choices`) on the drop they were
-// made for, as drops change keys. Choices are typed by the user and can't be
-// rebuilt, so nothing here removes a value the user typed, except a choice
-// whose drop is definitely gone (see `deleteOrphanedChoices`). Never logs any
-// text from a choice: nicknames are about other players (ADR 0006).
+// The keys of the user's split choices (`raid_drop_choices`). Choices are
+// typed by the user and can't be rebuilt, so nothing here edits what the user
+// typed, and only a choice whose drop is definitely gone is ever deleted
+// (`deleteOrphanedChoices`). Never logs any text from a choice: nicknames are
+// about other players. See docs/decisions/0020-raid-split-choice-keys.md.
 //
 // A detected purple is keyed by its `raid.special_loot` event (index 0), or,
-// while only the chest is known, by the chest's `loot` event and the item's
-// position. Once a purple has its own event, a choice under its chest key is
-// moved to the event key ("settled"). From then on it no longer depends on
-// which chest the event is matched with. See docs/architecture.md#raid-split-choices.
+// for a purple known only from the chest, by the chest's `loot` event and the
+// item's position. Which chest a `SELF` event is matched with can change while
+// events arrive, so choices never move on ingest, retry or rebuild: a drop
+// reads both its keys and merges them (`mergeChoices`). Only the owner's edit
+// collapses them into one row under the event key (raids/choices.ts), and the
+// one-time upgrade to nearest-chest matching moves them before re-matching
+// (`settleAllChoices`).
 
-type ChoiceRow = typeof raidDropChoices.$inferSelect;
-
-/** A special loot row's keys, as far as it has them. */
-export interface DropKeys {
-  specialEventId?: string | null | undefined;
-  lootEventId?: string | null | undefined;
-  lootItemPosition?: number | null | undefined;
-}
+export type ChoiceRow = typeof raidDropChoices.$inferSelect;
 
 /**
- * The event row merged with the chest row, field by field: the value of the
- * row changed last wins (the event row on a tie), but an empty field never
- * replaces a filled one.
+ * Two rows of one drop, merged field by field: the row changed last wins
+ * (`preferred` on a tie), but an empty field never replaces a filled one. Only
+ * for rows the owner has not edited together: an edit collapses them.
  */
-export function mergeChoices(eventRow: ChoiceRow, chestRow: ChoiceRow): ChoiceRow {
-  const chestNewer = chestRow.updatedAt > eventRow.updatedAt;
-  const [newer, older] = chestNewer ? [chestRow, eventRow] : [eventRow, chestRow];
+export function mergeChoices(preferred: ChoiceRow, other: ChoiceRow): ChoiceRow {
+  const [newer, older] =
+    other.updatedAt > preferred.updatedAt ? [other, preferred] : [preferred, other];
   return {
-    eventId: eventRow.eventId,
-    itemIndex: eventRow.itemIndex,
+    eventId: preferred.eventId,
+    itemIndex: preferred.itemIndex,
     mode: newer.mode ?? older.mode,
     ownValue: newer.ownValue ?? older.ownValue,
     partySize: newer.partySize ?? older.partySize,
@@ -52,85 +48,59 @@ function rowAt(tx: Queryable, eventId: string, itemIndex: number): ChoiceRow | u
 }
 
 /**
- * Moves the chest key's choices of one drop to its event key, merging with
- * choices already there. Returns true if a row was moved or merged.
- */
-export function settleDrop(tx: Queryable, drop: DropKeys): boolean {
-  const { specialEventId, lootEventId, lootItemPosition } = drop;
-  if (specialEventId == null || lootEventId == null || lootItemPosition == null) return false;
-  const chest = rowAt(tx, lootEventId, lootItemPosition);
-  if (!chest) return false;
-  const existing = rowAt(tx, specialEventId, 0);
-  const target: ChoiceRow = existing
-    ? mergeChoices(existing, chest)
-    : { ...chest, eventId: specialEventId, itemIndex: 0 };
-  tx.delete(raidDropChoices)
-    .where(
-      and(
-        eq(raidDropChoices.eventId, lootEventId),
-        eq(raidDropChoices.itemIndex, lootItemPosition),
-      ),
-    )
-    .run();
-  const { eventId, itemIndex, ...values } = target;
-  tx.insert(raidDropChoices)
-    .values({ eventId, itemIndex, ...values })
-    .onConflictDoUpdate({
-      target: [raidDropChoices.eventId, raidDropChoices.itemIndex],
-      set: values,
-    })
-    .run();
-  return true;
-}
-
-/** Settles every given drop. Returns how many choice rows moved. */
-export function settleDrops(tx: Queryable, drops: readonly DropKeys[]): number {
-  let moved = 0;
-  for (const drop of drops) if (settleDrop(tx, drop)) moved += 1;
-  return moved;
-}
-
-const dropKeyColumns = {
-  specialEventId: raidSpecialLoot.specialEventId,
-  lootEventId: raidSpecialLoot.lootEventId,
-  lootItemPosition: raidSpecialLoot.lootItemPosition,
-};
-
-/** The keys of one session's special loot rows as they are now. */
-export function sessionDropKeys(tx: Queryable, accountId: number, sessionId: string): DropKeys[] {
-  return tx
-    .select(dropKeyColumns)
-    .from(raidSpecialLoot)
-    .where(and(eq(raidSpecialLoot.accountId, accountId), eq(raidSpecialLoot.sessionId, sessionId)))
-    .all();
-}
-
-/**
- * Settles every drop that has both keys and a choice under its chest key.
- * Returns how many choice rows moved.
+ * Moves every chest-key row whose drop has its own event to that event key
+ * (merged with a row already there), with the special loot rows as they are
+ * now. Only for the upgrade to nearest-chest matching, before re-matching: it
+ * keeps each choice on the drop the owner saw. Returns how many rows moved.
  */
 export function settleAllChoices(tx: Queryable): number {
-  const chestKeyed = tx.select({ eventId: raidDropChoices.eventId }).from(raidDropChoices);
+  const keyed = tx.select({ eventId: raidDropChoices.eventId }).from(raidDropChoices);
   const drops = tx
-    .select(dropKeyColumns)
+    .select({
+      specialEventId: raidSpecialLoot.specialEventId,
+      lootEventId: raidSpecialLoot.lootEventId,
+      lootItemPosition: raidSpecialLoot.lootItemPosition,
+    })
     .from(raidSpecialLoot)
     .where(
-      and(
-        isNotNull(raidSpecialLoot.specialEventId),
-        inArray(raidSpecialLoot.lootEventId, chestKeyed),
-      ),
+      and(isNotNull(raidSpecialLoot.specialEventId), inArray(raidSpecialLoot.lootEventId, keyed)),
     )
     .all();
-  return settleDrops(tx, drops);
+  let moved = 0;
+  for (const { specialEventId, lootEventId, lootItemPosition } of drops) {
+    if (specialEventId === null || lootEventId === null || lootItemPosition === null) continue;
+    const chest = rowAt(tx, lootEventId, lootItemPosition);
+    if (!chest) continue;
+    const existing = rowAt(tx, specialEventId, 0);
+    const { eventId, itemIndex, ...values } = existing
+      ? mergeChoices(existing, chest)
+      : { ...chest, eventId: specialEventId, itemIndex: 0 };
+    tx.delete(raidDropChoices)
+      .where(
+        and(
+          eq(raidDropChoices.eventId, lootEventId),
+          eq(raidDropChoices.itemIndex, lootItemPosition),
+        ),
+      )
+      .run();
+    tx.insert(raidDropChoices)
+      .values({ eventId, itemIndex, ...values })
+      .onConflictDoUpdate({
+        target: [raidDropChoices.eventId, raidDropChoices.itemIndex],
+        set: values,
+      })
+      .run();
+    moved += 1;
+  }
+  return moved;
 }
 
 /**
  * Deletes the choices of drops that are definitely gone: their raw event was
- * projected without an error, and no special loot row has their key (as an
- * event key or a chest key). A failed or pending event never loses its
- * choices: they show again once it is projected. Call it only after settling,
- * so a drop that changed keys is never taken for a gone one. Returns how many
- * rows were deleted.
+ * projected without an error, and no special loot row has their key, as an
+ * event key or as a chest key (a chest matched with an event still shows its
+ * row). A failed or pending event never loses its choices: they show again
+ * once it is projected. Returns how many rows were deleted.
  */
 export function deleteOrphanedChoices(tx: Queryable): number {
   const c = raidDropChoices;
@@ -152,11 +122,4 @@ export function deleteOrphanedChoices(tx: Queryable): number {
     .delete(c)
     .where(and(inArray(c.eventId, projected), notExists(shown)))
     .run().changes;
-}
-
-/** Settles every choice, then deletes the orphaned ones. For after a full replay or a retry. */
-export function tidyChoices(tx: Queryable): { moved: number; deleted: number } {
-  const moved = settleAllChoices(tx);
-  const deleted = deleteOrphanedChoices(tx);
-  return { moved, deleted };
 }

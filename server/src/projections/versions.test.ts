@@ -134,7 +134,7 @@ describe('projection versions', () => {
       projections,
       now: () => TEST_NOW,
     });
-    expect(report.counts).toEqual({ events: 5, failed: 0 });
+    expect(report.counts).toEqual({ choicesMoved: 0, events: 5, failed: 0 });
     expect(report.tables).toEqual(
       [...REBUILT_TABLES, ...REBUILD_SETTLED_TABLES, 'projection_versions'].sort(),
     );

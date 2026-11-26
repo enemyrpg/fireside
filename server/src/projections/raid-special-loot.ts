@@ -16,12 +16,7 @@ import {
   raidDropChoices,
   raidSpecialLoot,
 } from '../db/schema.js';
-import {
-  sessionDropKeys,
-  settleAllChoices,
-  settleDrops,
-  tidyChoices,
-} from '../raids/choice-keys.js';
+import { deleteOrphanedChoices, settleAllChoices } from '../raids/choice-keys.js';
 import type { Projection } from './framework.js';
 import { accountIdOf, type AccountKey } from './lookup.js';
 
@@ -38,9 +33,9 @@ import { accountIdOf, type AccountKey } from './lookup.js';
 //
 // The `loot` tables are unchanged: loot totals still include own purples once.
 //
-// The user's split choices are not derived, but are keyed by these rows. Each
-// refresh settles them before and after (raids/choice-keys.ts), so a choice
-// stays on the drop the user saw and then sticks to the drop's own event.
+// The user's split choices are not derived, but are keyed by these rows. A
+// refresh never moves them: the matching can change while events arrive, and
+// a drop reads both its keys (docs/decisions/0020-raid-split-choice-keys.md).
 
 type Row = typeof raidSpecialLoot.$inferInsert;
 
@@ -221,9 +216,7 @@ export function specialLootRows(
 
 /**
  * Rebuilds one session's rows from raw. `currentEventId` is the event being
- * projected (not marked processed yet), if any. Choices are settled with the
- * old rows first, so one the user made on a drop moves to its event before
- * the matching can change, and again with the new rows.
+ * projected (not marked processed yet), if any.
  */
 function refreshSession(
   tx: Queryable,
@@ -231,8 +224,7 @@ function refreshSession(
   accountId: number,
   sessionId: string,
   currentEventId: string | null,
-): number {
-  let moved = settleDrops(tx, sessionDropKeys(tx, accountId, sessionId));
+): void {
   tx.delete(raidSpecialLoot)
     .where(and(eq(raidSpecialLoot.sessionId, sessionId), eq(raidSpecialLoot.accountId, accountId)))
     .run();
@@ -243,14 +235,19 @@ function refreshSession(
     lootPurples(tx, accountId, sessionId),
   );
   if (rows.length > 0) tx.insert(raidSpecialLoot).values(rows).run();
-  moved += settleDrops(tx, rows);
-  return moved;
 }
 
 export const raidSpecialLootProjection: Projection = {
   name: 'raid-special-loot',
   // 2: a `SELF` event takes the nearest unmatched chest purple, not the oldest.
   version: 2,
+
+  // Before re-matching, with the version 1 rows: move every chest-key choice
+  // to its drop's event, so it stays on the drop the owner saw. Also runs
+  // before the fallback full rebuild.
+  beforeUpgrade(tx) {
+    return { choicesMoved: settleAllChoices(tx) };
+  },
 
   // Refreshes every session that has special loot. A session without rows has
   // no projected raid purples, so the new rule changes nothing there.
@@ -265,18 +262,12 @@ export const raidSpecialLootProjection: Projection = {
       .from(raidSpecialLoot)
       .innerJoin(accounts, eq(raidSpecialLoot.accountId, accounts.id))
       .all();
-    let moved = 0;
     for (const { accountId, sessionId, userId, accountHash } of sessions) {
-      moved += refreshSession(tx, { userId, accountHash }, accountId, sessionId, null);
+      refreshSession(tx, { userId, accountHash }, accountId, sessionId, null);
     }
-    const choices = tidyChoices(tx);
     return {
       tables: [getTableName(raidSpecialLoot), getTableName(raidDropChoices)],
-      counts: {
-        raidSessions: sessions.length,
-        choicesMoved: moved + choices.moved,
-        choicesDeleted: choices.deleted,
-      },
+      counts: { raidSessions: sessions.length, choicesDeleted: deleteOrphanedChoices(tx) },
     };
   },
 
@@ -285,13 +276,9 @@ export const raidSpecialLootProjection: Projection = {
     refreshSession(tx, event, accountIdOf(tx, event), event.sessionId, event.eventId);
   },
 
-  // Before the rows are cleared: move choices to the event of the drop the user sees now.
-  beforeRebuild(tx) {
-    settleAllChoices(tx);
-  },
-
+  // Only removes choices of drops that are definitely gone; never moves one.
   afterReplay(tx, { log }) {
-    const { deleted } = tidyChoices(tx);
+    const deleted = deleteOrphanedChoices(tx);
     // Counts only: choices hold nicknames and notes.
     if (deleted > 0) log?.warn({ deleted }, 'Removed split choices of drops that no longer exist');
   },
