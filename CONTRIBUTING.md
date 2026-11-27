@@ -133,7 +133,9 @@ The RuneLite plugin lives in its own repository,
   the commit, so lines like `fix: …` in it don't reach the changelog. A check fails if the title
   doesn't follow the format. Types: `feat`, `fix`, `docs`, `chore`, `ci`,
   `build`, `test`, `refactor`, `perf`, `style`, `revert`, with an optional
-  scope (`fix(web): …`) and `!` for a breaking change.
+  scope (`fix(web): …`) and `!` for a breaking change. The type follows the
+  issue's type, not its labels: a Bug is usually a `fix:`, a Feature a
+  `feat:`, and a Task `docs:`, `ci:`, `chore:` or another type that fits.
 - **The template:** fill in what and why, how you tested it, whether the
   contract changed, and whether the docs are updated.
 - **Checks:** a pull request can only be merged when these pass: Lint, test
@@ -173,16 +175,23 @@ Breaking changes need a new API or event schema version. Raw events are
 stored unchanged, and everything derived from them must be rebuildable
 (`pnpm cli rebuild`). Events are idempotent by `eventId`.
 
-## Labels
+## Issue types and labels
 
-- **Type:** one per issue: `bug`, `enhancement`, `documentation`, `ci`,
-  `question`.
+- **Type:** every issue has one GitHub issue type: Bug, Feature or Task.
+  The issue forms set Bug or Feature. Docs and CI work is a Task.
+- **What it is about:** `documentation` (docs only) and `ci` (workflows,
+  build and tooling), on issues with the type Task. `question` for a
+  question about use or setup.
 - **Area:** usually one: `area: web`, `area: server`, `area: contract`,
   `area: deploy`.
 - **Cross-cutting:** `accessibility` (barriers for people with disabilities)
   and `multi-user` (several users on one instance), alongside the area.
 - **Status**, only when it applies: `needs decision`, `needs info`,
   `blocked`, `good first issue`, `help wanted`.
+- **Cross-repo:** `needs plugin` when the issue also needs a change in
+  [fireside-plugin](https://github.com/enemyrpg/fireside-plugin). Link the
+  issues with GitHub's "blocked by" relationship, so the one that has to
+  land first blocks the other.
 - **Priority**, only when it applies: `priority: high` or `priority: low`.
   No priority label means normal.
 - **On closing:** `wontfix` (close as "not planned" and link the ADR in
