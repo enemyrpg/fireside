@@ -1,6 +1,6 @@
 name: Bug report
 description: Something in the server or the dashboard doesn't work as it should.
-labels: [bug]
+type: Bug
 body:
   - type: markdown
     attributes:
