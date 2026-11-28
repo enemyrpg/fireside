@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.3](https://github.com/enemyrpg/fireside/compare/v0.2.2...v0.2.3) (2026-11-28)
+
+
+### Bug fixes
+
+* base prices on hourly volume-weighted averages ([#52](https://github.com/enemyrpg/fireside/issues/52)) ([0db33de](https://github.com/enemyrpg/fireside/commit/0db33de89bf1b8ba14d25e816bfd45ece7801008))
+
+
+### Documentation
+
+* describe patch versions of the contract ([#53](https://github.com/enemyrpg/fireside/issues/53)) ([450af23](https://github.com/enemyrpg/fireside/commit/450af232bb1fc1fabc5101d3022675cc8ce84bb7))
+* use issue types instead of type labels ([#50](https://github.com/enemyrpg/fireside/issues/50)) ([b21866c](https://github.com/enemyrpg/fireside/commit/b21866ce7ac4dea80fd59937a640292e506733cc))
+
 ## [0.2.2](https://github.com/enemyrpg/fireside/compare/v0.2.1...v0.2.2) (2026-11-26)
 
 
