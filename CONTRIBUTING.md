@@ -171,7 +171,10 @@ change to events or the API updates, in the same pull request:
 - and the documentation in `docs/` (for example
   [data-collected.md](docs/data-collected.md)).
 
-Breaking changes need a new API or event schema version. Raw events are
+`CONTRACT_VERSION` is semver: an addition is a minor version, a field that
+keeps its shape but changes its documented meaning is a patch version, and a
+breaking change needs a new major version and a new API or event schema
+version ([ADR 0007](docs/decisions/0007-contract-package.md)). Raw events are
 stored unchanged, and everything derived from them must be rebuildable
 (`pnpm cli rebuild`). Events are idempotent by `eventId`.
 
@@ -221,8 +224,8 @@ Releases are made by [release-please](https://github.com/googleapis/release-plea
 - Tags can't be moved or deleted. A bad release is fixed with a new one.
 
 **The contract is released separately.** After a pull request that bumps
-`CONTRACT_VERSION` is merged, a maintainer pushes the tag
-`contract-v<CONTRACT_VERSION>` on `main`, and
+`CONTRACT_VERSION` (major, minor or patch) is merged, a maintainer pushes the
+tag `contract-v<CONTRACT_VERSION>` on `main`, and
 `.github/workflows/release-contract.yml` publishes the contract package
 ([architecture.md](docs/architecture.md#the-contract-package)).
 release-please never touches these tags.
