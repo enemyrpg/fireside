@@ -505,6 +505,7 @@ export function formatMigrationReport(report: MigrationCheckReport): string[] {
       (row) =>
         `  ${mark(row.ok)} ${row.table.padEnd(width)}  ${rows(row.before).padStart(8)} → ${rows(row.after).padStart(8)}` +
         (row.before === undefined ? '  (new table)' : '') +
+        (row.after === undefined ? '  (dropped by a migration)' : '') +
         (row.recomputed ? '  (recomputed: see the rebuild check)' : ''),
     ),
     '',

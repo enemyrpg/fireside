@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { migrationsBefore, tempDir } from '../backup/testing.js';
 import {
   checkMigration,
+  formatMigrationReport,
   TABLES_ADDED_BY_PRICE_HOURS_MIGRATION,
   TABLES_DROPPED_BY_PRICE_HOURS_MIGRATION,
 } from './migration-check.js';
@@ -59,6 +60,10 @@ describe('migration 0028 (price hours)', () => {
       before: { rows: 1 },
       ok: true,
     });
+    expect(formatMigrationReport(report).filter((line) => line.includes('dropped'))).toEqual([
+      expect.stringMatching(/item_price_history .*\(dropped by a migration\)$/),
+      expect.stringMatching(/item_prices .*\(dropped by a migration\)$/),
+    ]);
     expect(report.rebuild.map((check) => check.name)).toEqual(
       expect.arrayContaining([...TABLES_ADDED_BY_PRICE_HOURS_MIGRATION]),
     );
