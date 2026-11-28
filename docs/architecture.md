@@ -388,7 +388,12 @@ The sources today:
     time with the source's 10 s spacing. It starts when an hour is missing
     and bank data is read (bank, summary, price movers, potion storage) or a
     session of any account is open, and when the newest stored hour is 24
-    hours behind, so every UTC day gets all its hours. A read never waits: it
+    hours behind, so every UTC day gets all its hours, or the last request
+    failed an hour ago. An hour whose response is unusable (another hour,
+    too few items, another shape) is counted in `price_hour_failures` and the
+    catch-up goes on with the next hours; after 3 failed catch-ups that hour
+    is skipped and stays missing. A network or HTTP error ends the catch-up
+    and counts against no hour. A read never waits: it
     answers with the stored prices (`prices.fetchedAt` says when they were
     last fetched), and the catch-up runs in the background. When those prices
     are over an hour old, the dashboard asks the account's bank, summary,

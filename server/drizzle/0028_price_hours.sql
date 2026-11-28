@@ -30,3 +30,10 @@ CREATE TABLE `price_hours` (
 	`low_volume` integer NOT NULL,
 	PRIMARY KEY(`hour_start`, `item_id`)
 );
+--> statement-breakpoint
+CREATE TABLE `price_hour_failures` (
+	`hour_start` text PRIMARY KEY NOT NULL,
+	`failures` integer NOT NULL,
+	`last_failed_at` text NOT NULL,
+	`skipped_at` text
+);

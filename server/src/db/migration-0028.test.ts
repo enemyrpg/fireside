@@ -64,6 +64,15 @@ describe('migration 0028 (price hours)', () => {
       expect.stringMatching(/item_price_history .*\(dropped by a migration\)$/),
       expect.stringMatching(/item_prices .*\(dropped by a migration\)$/),
     ]);
+    // A table dropped by mistake fails and carries no label that makes it look intended.
+    const mistake = formatMigrationReport({
+      ...report,
+      tables: [
+        ...report.tables,
+        { table: 'sessions', before: { rows: 1, hash: '' }, after: undefined, ok: false },
+      ],
+    }).find((line) => line.includes('sessions'));
+    expect(mistake).not.toContain('dropped');
     expect(report.rebuild.map((check) => check.name)).toEqual(
       expect.arrayContaining([...TABLES_ADDED_BY_PRICE_HOURS_MIGRATION]),
     );

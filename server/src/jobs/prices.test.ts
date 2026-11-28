@@ -54,14 +54,17 @@ describe('prices job', () => {
     const requests: { at: number; hour: number }[] = [];
     const warnings: string[] = [];
     let status = 200;
+    /** Hours whose next request answers 404, once. */
+    const failOnce = new Set<number>();
     /** While set, responses wait until `release()` is called. */
     let held: (() => void)[] | undefined;
     const fetchMock = ((url: string) => {
       expect(url.startsWith(URL_START)).toBe(true);
       const hour = Number(url.slice(URL_START.length)) * SECOND;
       requests.push({ at: Date.now(), hour });
+      const code = failOnce.delete(hour) ? 404 : status;
       const respond = () =>
-        new Response(status === 200 ? JSON.stringify(hourResponse(hour)) : '', { status });
+        new Response(code === 200 ? JSON.stringify(hourResponse(hour)) : '', { status: code });
       if (held === undefined) return Promise.resolve(respond());
       const waiting = held;
       return new Promise<Response>((resolve) => {
@@ -92,6 +95,7 @@ describe('prices job', () => {
       warnings,
       start: startJob,
       setStatus: (next: number) => (status = next),
+      failOnce: (hourMs: number) => failOnce.add(hourMs),
       hold: () => (held = []),
       release: () => {
         const waiting = held ?? [];
@@ -145,6 +149,24 @@ describe('prices job', () => {
     expect(t.requests).toHaveLength(24);
     expect(t.requests[0]?.hour).toBe(ms('2026-11-16T12:00:00.000Z'));
     expect(t.requests.at(-1)?.hour).toBe(ms('2026-11-17T11:00:00.000Z'));
+  });
+
+  it('finishes a daily batch an hour after a failed request, not a day later', async () => {
+    const t = setup();
+    t.filled();
+    t.start();
+    // The third hour of the next daily batch fails once.
+    t.failOnce(ms('2026-11-16T14:00:00.000Z'));
+    await vi.advanceTimersByTimeAsync(ms('2026-11-17T12:20:00.000Z') - Date.now());
+    expect(t.requests).toHaveLength(3);
+    expect(t.status()?.lastError?.message).toContain('404');
+    await vi.advanceTimersByTimeAsync(HOUR - 11 * MINUTE);
+    expect(t.requests).toHaveLength(3);
+    // An hour after the failure: the rest of the batch, from the hour that failed.
+    await vi.advanceTimersByTimeAsync(10 * MINUTE);
+    expect(t.requests[3]?.hour).toBe(ms('2026-11-16T14:00:00.000Z'));
+    expect(t.requests).toHaveLength(3 + 23);
+    expect(t.status()?.lastError).toBeNull();
   });
 
   it(

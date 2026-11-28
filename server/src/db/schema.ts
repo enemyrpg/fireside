@@ -804,6 +804,23 @@ export const priceHourFetches = sqliteTable('price_hour_fetches', {
 });
 
 /**
+ * Hours whose `/1h` response was unusable (empty, too few items, another
+ * hour, another shape). The catch-up goes on with the next hours and asks
+ * for this one again in later runs; after 3 failed runs it is skipped:
+ * never asked for again, and missing in the windows. A network or HTTP
+ * error never counts here. Pruned with `price_hours`, and an hour's row is
+ * deleted once it is stored.
+ */
+export const priceHourFailures = sqliteTable('price_hour_failures', {
+  hourStart: text('hour_start').primaryKey(),
+  /** Runs in which it failed. */
+  failures: integer('failures').notNull(),
+  lastFailedAt: text('last_failed_at').notNull(),
+  /** Set at the third failure: the hour is not asked for again. */
+  skippedAt: text('skipped_at'),
+});
+
+/**
  * The same sums per UTC day (`YYYY-MM-DD`), added up when each hour is stored,
  * so 7 d and 30 d need no hourly rows. The 35 days up to the newest stored one
  * are kept. Like `price_hours`: not derived from events, never rebuilt.

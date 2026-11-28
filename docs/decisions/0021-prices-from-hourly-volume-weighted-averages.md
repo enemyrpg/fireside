@@ -29,8 +29,13 @@ volume 0, and an item without trades in the hour is left out.
   Never one request per item, never `/timeseries`, and `/latest` is no
   longer used. An hour is asked for 10 minutes after it ends
   (`PRICE_HOUR_SETTLE_MS`) and stored once (`server/src/prices/fetch.ts`). A
-  response for another hour, or with fewer than 100 items, is an error and
-  stores nothing.
+  response for another hour, with fewer than 100 items or in another shape
+  stores nothing for that hour: the failure is counted against the hour
+  (`price_hour_failures`) and the catch-up goes on with the next ones, so one
+  bad hour never holds back newer hours. The hour is asked for again in later
+  catch-ups and skipped after 3 failed ones: never asked for again, and
+  missing in the windows. A network or HTTP error ends the catch-up and
+  counts against no hour.
 - **Storage:** per hour and item the value (average × volume, whole gp) and
   volume of each side (`price_hours`, the 48 hours up to the newest stored
   one), and the same sums per UTC day (`price_days`, 35 days, with the number
@@ -57,7 +62,9 @@ volume 0, and an item without trades in the hour is left out.
   at a time. It starts when an hour is missing and prices are read or a
   session is open, and also when the newest stored hour is 24 hours behind
   (`PRICES_BACKGROUND_AFTER_MS`). That replaces ADR 0019's fetch every
-  3 h 55 min. After a failed request, nothing for an hour.
+  3 h 55 min. After a failed request, nothing for an hour; then a catch-up
+  starts again also without reads or sessions, so a batch that stopped part
+  of the way is finished an hour later, not a day later.
 
 ## Consequences
 
@@ -77,11 +84,17 @@ volume 0, and an item without trades in the hour is left out.
   without reads or sessions, the hours before that are never fetched, their
   UTC days are incomplete, and 7 d and 30 d are left out on the matching
   days 7 and 30 days later. With the daily catch-up no hour is lost while the
-  server runs. Without it an idle server would make no calls at all.
+  server runs and the wiki answers, apart from an hour the wiki never gives
+  a usable response for (skipped after 3 tries). Without it an idle server
+  would make no calls at all.
 - The migration drops `item_prices` and `item_price_history`. They are not
   derived from raw events ([ADR 0003](0003-raw-events-and-projections.md))
   and midpoints are not comparable with averages. 24 h returns after the first
   catch-up, and 7 d and 30 d after 7 and 30 days, as on a new instance. Like
   before, the stored hours and days cannot be rebuilt.
+- While the first catch-up after the upgrade (or after a pause) runs, hours
+  are stored oldest first, so for those few minutes the current price comes
+  from the oldest hours fetched so far, while `fetchedAt` is the time of the
+  latest request. It is right again once the catch-up is done.
 - Thresholds (2× between sides) are constants in `rule.ts`. The low-volume
   marker for items with few trades is a separate contract change.

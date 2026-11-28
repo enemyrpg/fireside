@@ -24,8 +24,9 @@ export const PRICES_CHECK_INTERVAL_MS = 60_000;
  * batch of about 24 requests a day, so every UTC day gets all its hours and
  * 7 d / 30 d always come back (see
  * docs/decisions/0021-prices-from-hourly-volume-weighted-averages.md). It
- * stays well within the 48 hours a catch-up reaches, so no hour is lost
- * while the server runs.
+ * stays well within the 48 hours a catch-up reaches, so while the server
+ * runs no hour is lost unless the wiki never answers it usably (it is then
+ * skipped, prices/fetch.ts).
  */
 export const PRICES_BACKGROUND_AFTER_MS = 24 * 60 * 60 * 1000;
 
@@ -57,7 +58,8 @@ export interface PricesJob extends RunningJob {
  * when an hour is missing and:
  * - prices are read (`requested`) or a session is open (checked at start and
  *   every minute), or
- * - the newest stored hour is `PRICES_BACKGROUND_AFTER_MS` behind.
+ * - the newest stored hour is `PRICES_BACKGROUND_AFTER_MS` behind, or the
+ *   last request failed (an hour later, so a batch that stopped is finished).
  * Never more than one catch-up at a time, and none within an hour of a failed
  * request. A new hour settles once an hour, so a catch-up that succeeded
  * makes at most one request an hour after it. What is stored is in the
@@ -91,17 +93,31 @@ export function startPricesJob({
     };
   }
 
-  /** Whether the last request failed less than an hour ago. */
-  const backingOff = (nowMs: number) => {
+  /** Whether the last request failed. */
+  const lastFailed = () => {
     const row = sourceState(db, 'WIKI_PRICES');
-    const failed =
-      row?.lastErrorAt != null && row.lastAttemptAt != null && row.lastErrorAt >= row.lastAttemptAt;
-    return failed && nextAttemptAt(row, PRICES_INTERVAL_MS, nowMs) > nowMs;
+    return (
+      row?.lastErrorAt != null && row.lastAttemptAt != null && row.lastErrorAt >= row.lastAttemptAt
+    );
   };
 
+  /** Whether the last request failed less than an hour ago. */
+  const backingOff = (nowMs: number) =>
+    lastFailed() &&
+    nextAttemptAt(sourceState(db, 'WIKI_PRICES'), PRICES_INTERVAL_MS, nowMs) > nowMs;
+
+  /**
+   * Due without reads or sessions: once a day of hours is missing, and also
+   * an hour after a failed request (`backingOff` holds it until then), so a
+   * batch that stopped part of the way does not wait for the next day.
+   */
   const backgroundDue = (nowMs: number) => {
     const newest = newestStoredHour(db);
-    return newest === null || latestSettledHour(nowMs) - newest >= PRICES_BACKGROUND_AFTER_MS;
+    return (
+      newest === null ||
+      latestSettledHour(nowMs) - newest >= PRICES_BACKGROUND_AFTER_MS ||
+      lastFailed()
+    );
   };
 
   const sessionOpen = () =>

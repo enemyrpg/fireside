@@ -48,6 +48,7 @@ const SHARED_TABLES = [
   'named_icons',
   'price_hours',
   'price_hour_fetches',
+  'price_hour_failures',
   'price_days',
   'price_day_hours',
   'external_sources',

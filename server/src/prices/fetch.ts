@@ -1,8 +1,14 @@
-import { and, gte, lt, max, sql } from 'drizzle-orm';
+import { and, eq, gte, isNotNull, lt, max, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { systemClock, type Clock } from '../auth/api-keys.js';
 import type { Db, Queryable } from '../db/index.js';
-import { priceDayHours, priceDays, priceHourFetches, priceHours } from '../db/schema.js';
+import {
+  priceDayHours,
+  priceDays,
+  priceHourFailures,
+  priceHourFetches,
+  priceHours,
+} from '../db/schema.js';
 import { ExternalRequestError, type ExternalClient } from '../external/client.js';
 import { recordAttempt, recordFailure, recordSuccess } from '../external/state.js';
 import type { JobLogger } from '../jobs/session-timeout.js';
@@ -38,6 +44,12 @@ export const PRICE_CATCHUP_MAX = PRICE_HOURS_KEPT;
 
 /** UTC days of sums kept, for 7 d and 30 d. */
 export const PRICE_DAYS_KEPT = 35;
+
+/**
+ * Runs in which an hour's response was unusable before the hour is skipped:
+ * never asked for again, and missing in the windows.
+ */
+export const PRICE_HOUR_MAX_FAILURES = 3;
 
 /** A response with fewer items than this is treated as broken (a real hour has thousands). */
 export const MIN_PRICE_ITEMS = 100;
@@ -183,6 +195,7 @@ export function storeHourBucket(db: Db, bucket: HourBucket, fetchedAt: Date): bo
       .onConflictDoNothing()
       .run();
     if (inserted.changes === 0) return false;
+    tx.delete(priceHourFailures).where(eq(priceHourFailures.hourStart, bucket.hourStart)).run();
     inChunks(
       bucket.items.map((item) => ({ hourStart: bucket.hourStart, ...item })),
       (chunk) => tx.insert(priceHours).values(chunk).run(),
@@ -223,6 +236,7 @@ export function prunePrices(tx: Queryable): void {
   const firstHour = new Date(newest - (PRICE_HOURS_KEPT - 1) * HOUR_MS).toISOString();
   tx.delete(priceHours).where(lt(priceHours.hourStart, firstHour)).run();
   tx.delete(priceHourFetches).where(lt(priceHourFetches.hourStart, firstHour)).run();
+  tx.delete(priceHourFailures).where(lt(priceHourFailures.hourStart, firstHour)).run();
   const firstDay = isoDay(newest - (PRICE_DAYS_KEPT - 1) * DAY_MS);
   tx.delete(priceDays).where(lt(priceDays.day, firstDay)).run();
   tx.delete(priceDayHours).where(lt(priceDayHours.day, firstDay)).run();
@@ -235,7 +249,7 @@ export function latestSettledHour(nowMs: number): number {
 
 /**
  * The hours to fetch, oldest first, at most `PRICE_CATCHUP_MAX`: settled
- * hours among the last 48 that are not stored. Never an hour that pruning
+ * hours among the last 48 that are neither stored nor skipped. Never an hour that pruning
  * has already passed (older than 48 hours before the newest stored one), so
  * a clock that is behind cannot make the server fetch, store and prune the
  * same hour again and again, or count it twice in its day.
@@ -259,11 +273,47 @@ export function missingHours(db: Queryable, nowMs: number): number[] {
       .all()
       .map((row) => Date.parse(row.at)),
   );
+  for (const row of db
+    .select({ at: priceHourFailures.hourStart })
+    .from(priceHourFailures)
+    .where(isNotNull(priceHourFailures.skippedAt))
+    .all()) {
+    stored.add(Date.parse(row.at));
+  }
   const hours: number[] = [];
   for (let hour = first; hour <= latest; hour += HOUR_MS) {
     if (!stored.has(hour)) hours.push(hour);
   }
   return hours.slice(0, PRICE_CATCHUP_MAX);
+}
+
+/**
+ * Counts one failed run against an hour whose response was unusable, and
+ * skips the hour at `PRICE_HOUR_MAX_FAILURES`. Called at most once per hour
+ * and run: a run asks for each hour once.
+ */
+export function recordHourFailure(db: Db, hourMs: number, at: Date): void {
+  const failedAt = at.toISOString();
+  db.insert(priceHourFailures)
+    .values({ hourStart: new Date(hourMs).toISOString(), failures: 1, lastFailedAt: failedAt })
+    .onConflictDoUpdate({
+      target: priceHourFailures.hourStart,
+      set: {
+        failures: sql`${priceHourFailures.failures} + 1`,
+        lastFailedAt: failedAt,
+      },
+    })
+    .run();
+  db.update(priceHourFailures)
+    .set({ skippedAt: failedAt })
+    .where(
+      and(
+        eq(priceHourFailures.hourStart, new Date(hourMs).toISOString()),
+        gte(priceHourFailures.failures, PRICE_HOUR_MAX_FAILURES),
+        sql`${priceHourFailures.skippedAt} IS NULL`,
+      ),
+    )
+    .run();
 }
 
 export interface FetchMissingOptions {
@@ -278,9 +328,13 @@ export interface FetchMissingOptions {
 /**
  * One catch-up: fetches the missing hours one at a time, oldest first, each
  * stored as soon as it arrives, so a stop or crash keeps what was fetched.
- * The source's minimum interval in the client spaces the requests. Never
- * throws: the first failure is logged and stored for Settings → Server and
- * ends the catch-up; what is stored stays. Returns the number of hours stored.
+ * The source's minimum interval in the client spaces the requests. An hour
+ * whose response is unusable (`PricesFormatError`) is counted against that
+ * hour (`recordHourFailure`) and the run goes on, so one bad hour never
+ * holds back the newer ones. A network or HTTP error, or anything else,
+ * ends the run and counts against no hour. Never throws: failures are logged
+ * and stored for Settings → Server; what is stored stays. Returns the number
+ * of hours stored.
  */
 export async function fetchMissingHours({
   db,
@@ -291,6 +345,8 @@ export async function fetchMissingHours({
 }: FetchMissingOptions): Promise<number> {
   const hours = missingHours(db, now().getTime());
   let stored = 0;
+  let badHours = 0;
+  let firstBad: unknown;
   for (const hour of hours) {
     if (stopped()) break;
     recordAttempt(db, 'WIKI_PRICES', now());
@@ -310,19 +366,34 @@ export async function fetchMissingHours({
         );
       }
     } catch (error) {
+      const badHour = error instanceof PricesFormatError;
       // Only messages we wrote ourselves are stored and shown.
       const message =
-        error instanceof ExternalRequestError || error instanceof PricesFormatError
+        error instanceof ExternalRequestError || badHour
           ? error.message
           : 'Unexpected error, see the server log';
       try {
         recordFailure(db, 'WIKI_PRICES', now(), message);
+        if (badHour) recordHourFailure(db, hour, now());
       } catch (storeError) {
         log.error({ err: storeError }, 'Could not store the price update error');
+        break;
+      }
+      if (badHour) {
+        badHours += 1;
+        firstBad ??= error;
+        continue;
       }
       log.warn({ err: error }, 'Price update failed, keeping the prices stored so far');
       break;
     }
+  }
+  if (badHours > 0) {
+    // One line per run, also when the API's shape changed and every hour fails.
+    log.warn(
+      { hours: badHours, err: firstBad },
+      'An hour of prices had an unexpected response; going on with the next hours',
+    );
   }
   if (stored > 0) log.info({ hours: stored }, 'Prices updated');
   return stored;

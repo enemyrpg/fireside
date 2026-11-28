@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Database } from '../db/index.js';
-import { priceDayHours, priceDays, priceHourFetches, priceHours } from '../db/schema.js';
+import {
+  priceDayHours,
+  priceDays,
+  priceHourFailures,
+  priceHourFetches,
+  priceHours,
+} from '../db/schema.js';
 import {
   ExternalDisabledError,
   ExternalRequestError,
@@ -329,6 +335,8 @@ describe('fetchMissingHours', () => {
           .from(priceHourFetches)
           .all()
           .map((row) => Date.parse(row.hourStart)),
+      failures: () => db.select().from(priceHourFailures).all(),
+      now: () => clock,
       state: () => sourceState(db, 'WIKI_PRICES'),
     };
   }
@@ -367,21 +375,105 @@ describe('fetchMissingHours', () => {
     expect(t.state()).toMatchObject({ lastError: null });
   });
 
+  /** The bad hour of the tests below: in the middle of a full catch-up. */
+  const BAD = H - 40 * HOUR;
+  const badHour = (hourMs: number) => (hourMs === BAD ? hourResponse(hourMs, {}, 3) : undefined);
+
+  it('goes on after a bad hour, so newer hours are stored', async () => {
+    const t = setup();
+    t.failWith(badHour);
+    expect(await t.run()).toBe(PRICE_CATCHUP_MAX - 1);
+    expect(t.paths).toHaveLength(PRICE_CATCHUP_MAX);
+    expect(t.hours()).toHaveLength(PRICE_CATCHUP_MAX - 1);
+    expect(t.hours()).not.toContain(BAD);
+    expect(Math.max(...t.hours())).toBe(H);
+    expect(t.warnings).toEqual([
+      'An hour of prices had an unexpected response; going on with the next hours',
+    ]);
+  });
+
+  it('asks for a bad hour again in later runs, and skips it after 3 failed runs', async () => {
+    const t = setup();
+    t.failWith(badHour);
+    await t.run();
+    expect(t.failures()).toEqual([
+      expect.objectContaining({
+        hourStart: new Date(BAD).toISOString(),
+        failures: 1,
+        skippedAt: null,
+      }),
+    ]);
+    // Runs 2 and 3 ask for that hour only: everything else is stored.
+    await t.run();
+    await t.run();
+    expect(t.paths.slice(PRICE_CATCHUP_MAX)).toEqual([ts(BAD), ts(BAD)]);
+    expect(t.failures()).toEqual([
+      expect.objectContaining({ failures: 3, skippedAt: expect.any(String) as unknown }),
+    ]);
+    // Skipped: never asked for again, and missing in the windows.
+    expect(await t.run()).toBe(0);
+    expect(t.paths).toHaveLength(PRICE_CATCHUP_MAX + 2);
+    expect(missingHours(t.db, t.now())).toEqual([]);
+    expect(t.hours()).not.toContain(BAD);
+  });
+
+  it('forgets the failures of an hour once it is stored', async () => {
+    const t = setup();
+    t.failWith(badHour);
+    await t.run();
+    t.failWith(undefined);
+    await t.run();
+    expect(t.hours()).toContain(BAD);
+    expect(t.failures()).toEqual([]);
+  });
+
+  it('stops at a network error and counts it against no hour', async () => {
+    const t = setup();
+    t.failWith((hourMs) =>
+      hourMs === BAD ? new ExternalRequestError('Network error') : undefined,
+    );
+    for (let run = 0; run < 5; run++) await t.run();
+    // Every run stopped at that hour and asked for it again.
+    expect(t.paths.filter((path) => path === ts(BAD))).toHaveLength(5);
+    expect(t.hours()).toHaveLength(7);
+    expect(t.failures()).toEqual([]);
+  });
+
   it.each([
     ['a format error', () => ({ data: {}, timestamp: 0 }), 'unexpected format'],
     ['too few items', (hourMs: number) => hourResponse(hourMs, {}, 3), 'usable items'],
     ['another hour', (hourMs: number) => hourResponse(hourMs + HOUR), 'another hour'],
+  ])(
+    'stores nothing for %s, counts it against each hour and goes on',
+    async (_name, reply, message) => {
+      const t = setup();
+      t.failWith(reply);
+      expect(await t.run()).toBe(0);
+      expect(t.paths).toHaveLength(PRICE_CATCHUP_MAX);
+      expect(t.hours()).toEqual([]);
+      expect(t.failures()).toHaveLength(PRICE_CATCHUP_MAX);
+      expect(t.state()?.lastError).toContain(message);
+      // One warning for the run, not one per hour.
+      expect(t.warnings).toHaveLength(1);
+    },
+  );
+
+  it.each([
     ['an unexpected error', () => new Error('boom secret'), 'Unexpected error, see the server log'],
     ['a disabled source', () => new ExternalDisabledError('WIKI_PRICES'), 'Unexpected error'],
-  ])('stores nothing for %s and shows only its own message', async (_name, reply, message) => {
-    const t = setup();
-    t.failWith(reply);
-    expect(await t.run()).toBe(0);
-    expect(t.paths).toHaveLength(1);
-    expect(t.hours()).toEqual([]);
-    expect(t.state()?.lastError).toContain(message);
-    expect(t.state()?.lastError).not.toContain('secret');
-  });
+  ])(
+    'stops at %s, stores nothing and shows only its own message',
+    async (_name, reply, message) => {
+      const t = setup();
+      t.failWith(reply);
+      expect(await t.run()).toBe(0);
+      expect(t.paths).toHaveLength(1);
+      expect(t.hours()).toEqual([]);
+      expect(t.failures()).toEqual([]);
+      expect(t.state()?.lastError).toContain(message);
+      expect(t.state()?.lastError).not.toContain('secret');
+    },
+  );
 
   it('ends between requests when stopped', async () => {
     const t = setup();
