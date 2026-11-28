@@ -53,6 +53,25 @@ export const TABLES_ADDED_BY_SESSION_CLOG_MIGRATION: readonly string[] = ['clog_
 /** Tables the price history migration (0026) added. They start empty. */
 export const TABLES_ADDED_BY_PRICE_HISTORY_MIGRATION: readonly string[] = ['item_price_history'];
 
+/** Tables the price hours migration (0028) added. They start empty. */
+export const TABLES_ADDED_BY_PRICE_HOURS_MIGRATION: readonly string[] = [
+  'price_hours',
+  'price_hour_fetches',
+  'price_hour_failures',
+  'price_days',
+  'price_day_hours',
+];
+
+/**
+ * Tables the price hours migration (0028) dropped: the `/latest` prices and
+ * their midpoint history. Fetched data, not derived from events and not
+ * comparable with the hourly averages that replace them.
+ */
+export const TABLES_DROPPED_BY_PRICE_HOURS_MIGRATION: readonly string[] = [
+  'item_prices',
+  'item_price_history',
+];
+
 /** Tables a migration adds empty. */
 const EMPTY_NEW_TABLES = [
   ...TABLES_ADDED_BY_LOGIN_MIGRATION,
@@ -61,6 +80,7 @@ const EMPTY_NEW_TABLES = [
   ...TABLES_ADDED_BY_TWO_FACTOR_MIGRATION,
   ...TABLES_ADDED_BY_SESSION_CLOG_MIGRATION,
   ...TABLES_ADDED_BY_PRICE_HISTORY_MIGRATION,
+  ...TABLES_ADDED_BY_PRICE_HOURS_MIGRATION,
 ];
 
 /**
@@ -357,8 +377,9 @@ function derivedState(database: Database): Map<string, unknown> {
   // Raw, like `external_snapshots`: a rebuild never touches it.
   state.set('clog_reads', tableState(database.sqlite, 'clog_reads'));
   // Fetched prices, not derived from events: a rebuild never touches them.
-  state.set('item_prices', tableState(database.sqlite, 'item_prices'));
-  state.set('item_price_history', tableState(database.sqlite, 'item_price_history'));
+  for (const table of TABLES_ADDED_BY_PRICE_HOURS_MIGRATION) {
+    state.set(table, tableState(database.sqlite, table));
+  }
   state.set(
     'failed events',
     count(database, 'SELECT count(*) FROM events WHERE projection_error IS NOT NULL'),
@@ -437,6 +458,9 @@ export function checkMigration(
         );
         return { table, before: old, after: current, ok };
       }
+      if (current === undefined && TABLES_DROPPED_BY_PRICE_HOURS_MIGRATION.includes(table)) {
+        return { table, before: old, after: current, ok: true };
+      }
       const ok =
         old === undefined
           ? (!hadUsers && TABLES_ADDED_BY_USERS_MIGRATION.includes(table)) ||
@@ -482,6 +506,9 @@ export function formatMigrationReport(report: MigrationCheckReport): string[] {
       (row) =>
         `  ${mark(row.ok)} ${row.table.padEnd(width)}  ${rows(row.before).padStart(8)} → ${rows(row.after).padStart(8)}` +
         (row.before === undefined ? '  (new table)' : '') +
+        (row.after === undefined && TABLES_DROPPED_BY_PRICE_HOURS_MIGRATION.includes(row.table)
+          ? '  (dropped by a migration)'
+          : '') +
         (row.recomputed ? '  (recomputed: see the rebuild check)' : ''),
     ),
     '',

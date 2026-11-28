@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createApiKey, ownKey } from '../auth/api-keys.js';
-import { tempDir } from '../backup/testing.js';
+import { migrationsBefore, tempDir } from '../backup/testing.js';
 import { storeEvents } from '../ingest/store.js';
 import { PROJECTIONS, projectEvents } from '../projections/index.js';
 import { eventFactory, sessionIdOf, TEST_NOW } from '../projections/testing.js';
@@ -28,7 +28,10 @@ describe('migration 0027 (AFK estimate, projection versions)', () => {
 
   /** A database as the previous version left it: no new tables, AFK only from `session.afk`. */
   function oldDatabase(file: string): void {
-    const database = openDatabase(file);
+    // Up to 0027 only: the newest migration row deleted below is then 0027's.
+    const database = openDatabase(file, {
+      migrationsFolder: migrationsBefore(dir, '0028_price_hours'),
+    });
     const f = eventFactory();
     const idle = { payload: { idle: true } };
     const events = [

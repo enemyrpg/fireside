@@ -720,6 +720,16 @@ first. There is no manual step. That start takes a little longer, and the log
 says "Recomputed projections after a rule change" with the time it took. The
 plugin retries anything it sends meanwhile.
 
+### Upgrading to hourly prices
+
+The version that bases prices on hourly volume-weighted averages
+([ADR 0021](decisions/0021-prices-from-hourly-volume-weighted-averages.md))
+drops the stored prices and the old Price movers history: they were single
+fetches and cannot be compared with averages. With `PRICES_ENABLED` on, the
+first start fetches the last 48 hours (about 8 minutes). Until then bank
+values use the snapshot prices. Price movers shows 24 h after that first
+catch-up, and 7 d and 30 d after 7 and 30 days, as on a new instance.
+
 ## Moving to another machine
 
 1. **On the old machine, take a fresh backup** while the server runs:
@@ -790,16 +800,20 @@ USER_AGENT_CONTACT=you@example.com   # sent in the User-Agent of every call
 PRICES_ENABLED=true
 ```
 
-- **`PRICES_ENABLED`** fetches current Grand Exchange prices from the
+- **`PRICES_ENABLED`** fetches Grand Exchange trades from the
   [OSRS Wiki](https://oldschool.runescape.wiki/w/RuneScape:Real-time_Prices):
-  one request for all items, only when they are needed. It fetches when the
+  one request per hour of trades, for all items, each hour once. Each item is
+  then valued at the volume-weighted average of its last 24 hours of trades,
+  so one odd trade does not move it. It fetches the missing hours when the
   bank, the net worth, Price movers or potion storage are opened, or while an
-  account is logged in, at most once an hour, and every 3 h 55 min otherwise
-  so Price movers have history: about 6 calls a day when nobody plays, never
-  more than 24. A page never waits for it: it shows the stored prices and their
-  time. The bank and the net worth are then valued at current prices. Bank history, loot and raid drops keep
-  the prices from when they happened. Items the wiki has no price for keep the
-  price the plugin recorded. If a fetch fails, the last prices are kept.
+  account is logged in, and once a day otherwise, so Price movers have
+  history: about 24 calls a day, up to 48 in one go after a pause (about 8
+  minutes, 10 s apart). A page never waits for it: it shows the stored prices
+  and their time. The bank and the net worth are then valued at current
+  prices, which can differ slightly from RuneLite's own GE value. Bank
+  history, loot and raid drops keep the prices from when they happened.
+  Items without trades in the last 35 days keep the price the plugin
+  recorded. If a fetch fails, the prices stored so far are kept.
 - **`RUNEPROFILE_ENABLED`** fetches the collection log from
   [RuneProfile](https://runeprofile.com) for the accounts their owners turn
   it on for under **Settings → OSRS accounts**, by the account's current

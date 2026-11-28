@@ -1,219 +1,228 @@
 import { PRICE_MOVER_PERIODS, type PriceMoverPeriod } from '@fireside/shared';
-import { asc, desc, eq, gt, inArray, lte, sql } from 'drizzle-orm';
+import { and, count, eq, gte, lt, lte, max, sql } from 'drizzle-orm';
 import type { Queryable } from '../db/index.js';
-import { itemPriceHistory } from '../db/schema.js';
-import { inChunks } from '../projections/bank.js';
-import { currentPrice } from '../read/prices.js';
+import { priceDayHours, priceDays, priceHourFetches, priceHours } from '../db/schema.js';
+import { newestStoredHour } from './fetch.js';
+import { windowPrice, type TradeSums } from './rule.js';
 
-// `item_price_history`: the prices of earlier fetches, for Price movers. Storing and retention do
-// not depend on how often prices are fetched; only the reach of each period in
-// `PRICE_MOVER_WINDOWS` assumes the price job's schedule (jobs/prices.ts: at most once an hour,
-// less than 4 hours apart). Retention does not look at the clock or at the times at all: it
-// keeps a number of fetches in the order they were stored, so a wrong clock can never delete more
-// than the same number of ordinary fetches would, and real fetches are kept again as soon as the
-// clock is right. A baseline is the stored fetch nearest to the time asked for, within reach of it,
-// so fetches at irregular times (or on demand) only make a period come and go, never wrong.
+// Price windows over the stored `/1h` buckets (prices/fetch.ts), for bank
+// values and Price movers. Everything counts from the end of the newest
+// stored hour, not from the clock: the change is between two known windows
+// also when the newest one is old. See
+// docs/decisions/0021-prices-from-hourly-volume-weighted-averages.md.
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 
-/**
- * The most recently stored fetches kept, whatever their times. With at most one fetch an hour
- * they cover at least 48 hours, enough for 24 h; when idle (about 4 hours apart) about 8 days.
- */
-export const PRICE_HISTORY_HOURLY_FETCHES = 48;
+/** Hours in the current window, and in the 24 h baseline before it. */
+export const PRICE_WINDOW_HOURS = 24;
 
-/** The most recently stored first-fetches-of-a-UTC-day kept as well: 35 days of daily ones. */
-export const PRICE_HISTORY_DAILY_FETCHES = 35;
+/** Days of the first fallback, for items without trades in the current window. */
+export const PRICE_FALLBACK_DAYS = 7;
 
-/**
- * How far back each period looks, and how far from that time the stored fetch
- * compared against may be. Earlier is allowed generously, later hardly at
- * all, so a period is at most 2 hours shorter than its label: "7 d" on a
- * fresh instance first shows when the oldest fetch is (almost) 7 days old.
- * 24 hours is compared with the fetches of the last 48: the price job leaves
- * less than 4 hours between two (jobs/prices.ts), so one is always within 2
- * hours. 7 and 30 days are compared with the first fetch of each UTC day,
- * which lands between midnight and almost 4 hours after it, so two of them
- * can be up to about 28 hours apart: with 2 hours after the target allowed,
- * 26 hours before it keep one always in reach (a "7 d" baseline is then at
- * most 7 d 26 h old). See docs/decisions/0019-prices-fetched-on-demand.md.
- */
-export const PRICE_MOVER_WINDOWS: Record<
-  PriceMoverPeriod,
-  { agoMs: number; earlierMs: number; laterMs: number }
-> = {
-  '24h': { agoMs: DAY_MS, earlierMs: 2 * HOUR_MS, laterMs: 2 * HOUR_MS },
-  '7d': { agoMs: 7 * DAY_MS, earlierMs: 26 * HOUR_MS, laterMs: 2 * HOUR_MS },
-  '30d': { agoMs: 30 * DAY_MS, earlierMs: 26 * HOUR_MS, laterMs: 2 * HOUR_MS },
+/** How far back each period compares: 24 h with the hours before, 7 d and 30 d with a UTC day. */
+export const PRICE_MOVER_AGO_MS: Record<PriceMoverPeriod, number> = {
+  '24h': DAY_MS,
+  '7d': 7 * DAY_MS,
+  '30d': 30 * DAY_MS,
 };
 
-/**
- * A fetch stamped more than this after the one stored before it, or any time
- * before it, is worth a warning: the server was off, or the clock is wrong.
- * It is stored and pruned like any other.
- */
-export const PRICE_HISTORY_JUMP_MS = DAY_MS;
+const iso = (ms: number) => new Date(ms).toISOString();
+const isoDay = (ms: number) => iso(ms).slice(0, 10);
 
-export interface HistoryPrice {
-  itemId: number;
-  high: number | null;
-  low: number | null;
-}
+const sums = {
+  highValue: sql<number>`sum(high_value)`,
+  highVolume: sql<number>`sum(high_volume)`,
+  lowValue: sql<number>`sum(low_value)`,
+  lowVolume: sql<number>`sum(low_volume)`,
+};
 
-/** One stored fetch: its time and its place in the order the fetches were stored. */
-export interface StoredFetch {
-  at: string;
-  seq: number;
-}
-
-/**
- * The stored fetches in the order they were stored (`seq`), which is not the
- * order of their times when the clock has been wrong.
- */
-export function storedFetches(tx: Queryable): StoredFetch[] {
-  return tx
-    .select({ at: itemPriceHistory.fetchedAt, seq: sql<number>`min(${itemPriceHistory.seq})` })
-    .from(itemPriceHistory)
-    .groupBy(itemPriceHistory.fetchedAt)
-    .all()
-    .sort((a, b) => a.seq - b.seq);
-}
-
-/** A fetch whose time does not follow on from the fetch stored before it. */
-export interface ClockJump {
-  fetchedAt: string;
-  /** The fetch stored before it. */
-  previousAt: string;
-}
-
-/**
- * Stores one fetch and prunes what is no longer kept. Call inside the
- * transaction that stores the prices themselves. Returns the two times if
- * the fetch is more than a day after the one stored before it, or before
- * it, for a warning; nothing else depends on it.
- */
-export function recordPriceHistory(
-  tx: Queryable,
-  prices: readonly HistoryPrice[],
-  fetchedAt: Date,
-): ClockJump | null {
-  const at = fetchedAt.toISOString();
-  // The most recently stored fetch always survives pruning (it is among the
-  // newest 48), so the highest `seq` only ever goes up.
-  const previous = storedFetches(tx).at(-1);
-  const seq = (previous?.seq ?? 0) + 1;
-  inChunks(
-    prices.map(({ itemId, high, low }) => ({ fetchedAt: at, itemId, high, low, seq })),
-    (chunk) => tx.insert(itemPriceHistory).values(chunk).onConflictDoNothing().run(),
-  );
-  prunePriceHistory(tx);
-  if (previous === undefined) return null;
-  const sincePrevious = fetchedAt.getTime() - Date.parse(previous.at);
-  return sincePrevious > PRICE_HISTORY_JUMP_MS || sincePrevious < 0
-    ? { fetchedAt: at, previousAt: previous.at }
-    : null;
-}
-
-/**
- * Deletes every fetch that is neither among the 48 most recently stored nor
- * among the 35 most recently stored first-fetches-of-a-UTC-day. "Most
- * recently stored" is by `seq`, never by time and never by the clock: one
- * stored fetch pushes out at most one fetch of each kind, however its time
- * is stamped, and fetches stamped ahead by a wrong clock do not outrank the
- * real ones stored after them. Which fetch is the first of its UTC day does
- * come from the times: the earliest stored one of that day.
- * Returns the number of fetches deleted.
- */
-export function prunePriceHistory(tx: Queryable): number {
-  const fetches = storedFetches(tx);
-  const keep = new Set(fetches.slice(-PRICE_HISTORY_HOURLY_FETCHES).map((fetch) => fetch.at));
-  const firstOfDay = new Map<string, StoredFetch>();
-  for (const fetch of fetches) {
-    const day = fetch.at.slice(0, 10);
-    const first = firstOfDay.get(day);
-    if (first === undefined || fetch.at < first.at) firstOfDay.set(day, fetch);
-  }
-  const dailies = [...firstOfDay.values()].sort((a, b) => a.seq - b.seq);
-  for (const fetch of dailies.slice(-PRICE_HISTORY_DAILY_FETCHES)) keep.add(fetch.at);
-  const gone = fetches.filter((fetch) => !keep.has(fetch.at)).map((fetch) => fetch.at);
-  inChunks(gone, (chunk) =>
-    tx.delete(itemPriceHistory).where(inArray(itemPriceHistory.fetchedAt, chunk)).run(),
-  );
-  return gone.length;
-}
-
-/**
- * The stored fetch nearest to `targetMs` that is at most `earlierMs` before
- * it or `laterMs` after it, and before `before` (the fetch the current
- * prices are from). `null` when there is none: the period is then simply not
- * shown.
- */
-export function baselineFetch(
-  db: Queryable,
-  targetMs: number,
-  { earlierMs, laterMs }: { earlierMs: number; laterMs: number },
-  before: string,
-): string | null {
-  const target = new Date(targetMs).toISOString();
-  const earlier = db
-    .select({ at: itemPriceHistory.fetchedAt })
-    .from(itemPriceHistory)
-    .where(lte(itemPriceHistory.fetchedAt, target))
-    .orderBy(desc(itemPriceHistory.fetchedAt))
-    .limit(1)
-    .get()?.at;
-  const later = db
-    .select({ at: itemPriceHistory.fetchedAt })
-    .from(itemPriceHistory)
-    .where(gt(itemPriceHistory.fetchedAt, target))
-    .orderBy(asc(itemPriceHistory.fetchedAt))
-    .limit(1)
-    .get()?.at;
-  const distance = (at: string) => Math.abs(Date.parse(at) - targetMs);
-  const inReach = [
-    earlier !== undefined && distance(earlier) <= earlierMs ? earlier : undefined,
-    later !== undefined && distance(later) <= laterMs ? later : undefined,
-  ].filter((at): at is string => at !== undefined && at < before);
-  // The nearest of the two; the earlier one on a tie.
-  return inReach.sort((a, b) => distance(a) - distance(b))[0] ?? null;
-}
-
-/** The price of every item in one stored fetch, by the same rule as current prices. */
-export function pricesOfFetch(db: Queryable, fetchedAt: string): Map<number, number> {
+function pricesOf(rows: readonly (TradeSums & { itemId: number })[]): Map<number, number> {
   const byItem = new Map<number, number>();
-  const rows = db
-    .select()
-    .from(itemPriceHistory)
-    .where(eq(itemPriceHistory.fetchedAt, fetchedAt))
-    .all();
   for (const row of rows) {
-    const each = currentPrice(row.high, row.low);
+    const each = windowPrice(row);
     if (each !== null) byItem.set(row.itemId, each);
   }
   return byItem;
 }
 
+/** The price of every item traded in the hours [`fromMs`, `toMs`). */
+export function hourWindowPrices(db: Queryable, fromMs: number, toMs: number): Map<number, number> {
+  return pricesOf(
+    db
+      .select({ itemId: priceHours.itemId, ...sums })
+      .from(priceHours)
+      .where(and(gte(priceHours.hourStart, iso(fromMs)), lt(priceHours.hourStart, iso(toMs))))
+      .groupBy(priceHours.itemId)
+      .all(),
+  );
+}
+
+/** How many hours in [`fromMs`, `toMs`) are stored. */
+export function storedHours(db: Queryable, fromMs: number, toMs: number): number {
+  return (
+    db
+      .select({ n: count() })
+      .from(priceHourFetches)
+      .where(
+        and(
+          gte(priceHourFetches.hourStart, iso(fromMs)),
+          lt(priceHourFetches.hourStart, iso(toMs)),
+        ),
+      )
+      .get()?.n ?? 0
+  );
+}
+
+/** The price of every item traded on the UTC days from `fromDay` to `toDay`, both included. */
+function dayWindowPrices(db: Queryable, fromDay: string, toDay: string): Map<number, number> {
+  return pricesOf(
+    db
+      .select({ itemId: priceDays.itemId, ...sums })
+      .from(priceDays)
+      .where(and(gte(priceDays.day, fromDay), lte(priceDays.day, toDay)))
+      .groupBy(priceDays.itemId)
+      .all(),
+  );
+}
+
+/** Each item's price on the newest stored UTC day it traded. */
+function lastDayPrices(db: Queryable): Map<number, number> {
+  const newest = db
+    .select({ itemId: priceDays.itemId, day: max(priceDays.day).as('newest_day') })
+    .from(priceDays)
+    .groupBy(priceDays.itemId)
+    .as('newest');
+  return pricesOf(
+    db
+      .select({
+        itemId: priceDays.itemId,
+        highValue: priceDays.highValue,
+        highVolume: priceDays.highVolume,
+        lowValue: priceDays.lowValue,
+        lowVolume: priceDays.lowVolume,
+      })
+      .from(priceDays)
+      .innerJoin(newest, and(eq(priceDays.itemId, newest.itemId), eq(priceDays.day, newest.day)))
+      .all(),
+  );
+}
+
+/** Where a current price comes from, best first. */
+export type CurrentPriceFrom = 'HOURS' | 'WEEK' | 'LAST_DAY';
+
+export interface CurrentWindow {
+  /** End of the newest stored hour (epoch ms): the current window is the 24 hours before it. */
+  endMs: number;
+  /** Whether all 24 hours of the current window are stored. */
+  complete: boolean;
+  /** Items traded in the current window: the only prices Price movers compares. */
+  hours: Map<number, number>;
+  /** Every item with a price, and where it comes from. */
+  prices: Map<number, { each: number; from: CurrentPriceFrom }>;
+}
+
+/** The last window per database, with the stored state it was computed from. */
+const cache = new WeakMap<Queryable, { key: string; window: CurrentWindow | null }>();
+
+/**
+ * The current prices: the 24 h window up to the newest stored hour; for an
+ * item without trades in it, the last 7 UTC days; then its newest day with
+ * trades in the 35 kept. `null` while nothing is stored. Bank reads come in
+ * groups (bank, summary, movers, potion storage), so the result is kept
+ * until another hour is stored.
+ */
+export function currentWindow(db: Queryable): CurrentWindow | null {
+  const state = db
+    .select({
+      newest: max(priceHourFetches.hourStart),
+      stored: max(priceHourFetches.fetchedAt),
+      hours: count(),
+    })
+    .from(priceHourFetches)
+    .get();
+  const days = db
+    .select({ n: count(), hours: sql<number>`sum(hours)` })
+    .from(priceDayHours)
+    .get();
+  const key = JSON.stringify([state, days]);
+  const cached = cache.get(db);
+  if (cached?.key === key) return cached.window;
+
+  const newest = newestStoredHour(db);
+  let window: CurrentWindow | null = null;
+  if (newest !== null) {
+    const endMs = newest + HOUR_MS;
+    const fromMs = endMs - PRICE_WINDOW_HOURS * HOUR_MS;
+    const hours = hourWindowPrices(db, fromMs, endMs);
+    const lastDay = isoDay(newest);
+    const week = dayWindowPrices(db, isoDay(newest - (PRICE_FALLBACK_DAYS - 1) * DAY_MS), lastDay);
+    const prices = new Map<number, { each: number; from: CurrentPriceFrom }>();
+    for (const [itemId, each] of lastDayPrices(db)) prices.set(itemId, { each, from: 'LAST_DAY' });
+    for (const [itemId, each] of week) prices.set(itemId, { each, from: 'WEEK' });
+    for (const [itemId, each] of hours) prices.set(itemId, { each, from: 'HOURS' });
+    window = {
+      endMs,
+      complete: storedHours(db, fromMs, endMs) === PRICE_WINDOW_HOURS,
+      hours,
+      prices,
+    };
+  }
+  cache.set(db, { key, window });
+  return window;
+}
+
+/**
+ * The UTC day a 7 d or 30 d period compares with: the one whose middle is
+ * nearest to the middle of the current window, `agoMs` earlier. The period
+ * is then its label ± 12 hours.
+ */
+export function baselineDay(endMs: number, agoMs: number): string {
+  const target = endMs - (PRICE_WINDOW_HOURS * HOUR_MS) / 2 - agoMs;
+  return isoDay(target);
+}
+
 export interface PriceBaseline {
   period: PriceMoverPeriod;
+  /** End of the window compared with. */
   baselineAt: string;
   priceOf: Map<number, number>;
 }
 
 /**
- * The periods that have a baseline, shortest first. `currentAt` is when the
- * current prices were fetched: a period reaches back from then, not from the
- * clock, so the change is between two known prices also when the newest
- * fetch is old.
+ * The periods that have a baseline, shortest first. None while the current
+ * window has a missing hour. 24 h needs all 24 hours before it; 7 d and 30 d
+ * need all 24 hours of their UTC day. A period without one is left out,
+ * never compared with an incomplete window.
  */
-export function priceBaselines(db: Queryable, currentAt: string): PriceBaseline[] {
-  const currentMs = Date.parse(currentAt);
+export function priceBaselines(db: Queryable, window: CurrentWindow): PriceBaseline[] {
+  if (!window.complete) return [];
   const baselines: PriceBaseline[] = [];
   for (const period of PRICE_MOVER_PERIODS) {
-    const { agoMs, ...reach } = PRICE_MOVER_WINDOWS[period];
-    const baselineAt = baselineFetch(db, currentMs - agoMs, reach, currentAt);
-    if (baselineAt === null) continue;
-    baselines.push({ period, baselineAt, priceOf: pricesOfFetch(db, baselineAt) });
+    const agoMs = PRICE_MOVER_AGO_MS[period];
+    if (period === '24h') {
+      const toMs = window.endMs - agoMs;
+      const fromMs = toMs - PRICE_WINDOW_HOURS * HOUR_MS;
+      if (storedHours(db, fromMs, toMs) !== PRICE_WINDOW_HOURS) continue;
+      baselines.push({
+        period,
+        baselineAt: iso(toMs),
+        priceOf: hourWindowPrices(db, fromMs, toMs),
+      });
+      continue;
+    }
+    const day = baselineDay(window.endMs, agoMs);
+    const hours = db
+      .select({ hours: priceDayHours.hours })
+      .from(priceDayHours)
+      .where(eq(priceDayHours.day, day))
+      .get()?.hours;
+    if (hours !== PRICE_WINDOW_HOURS) continue;
+    baselines.push({
+      period,
+      baselineAt: iso(Date.parse(`${day}T00:00:00.000Z`) + DAY_MS),
+      priceOf: dayWindowPrices(db, day, day),
+    });
   }
   return baselines;
 }

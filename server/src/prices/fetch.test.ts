@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Database } from '../db/index.js';
-import { itemPriceHistory, itemPrices } from '../db/schema.js';
+import {
+  priceDayHours,
+  priceDays,
+  priceHourFailures,
+  priceHourFetches,
+  priceHours,
+} from '../db/schema.js';
 import {
   ExternalDisabledError,
   ExternalRequestError,
@@ -9,125 +15,275 @@ import {
 import { sourceState } from '../external/state.js';
 import { testDatabase } from '../test-utils.js';
 import {
+  fetchMissingHours,
+  HOUR_PATH,
+  latestSettledHour,
+  MAX_HOUR_SUM,
   MIN_PRICE_ITEMS,
-  parseLatestPrices,
-  PRICES_PATH,
+  missingHours,
+  parseHourBucket,
+  PRICE_CATCHUP_MAX,
+  PRICE_DAYS_KEPT,
+  PRICE_HOUR_SETTLE_MS,
+  PRICE_HOURS_KEPT,
   PricesFormatError,
-  refreshPrices,
+  storeHourBucket,
 } from './fetch.js';
+import { DAY, FILLER_FROM, HOUR, hourResponse, storeHour, storeHours } from './testing.js';
 
-// Hand-written responses in the shape of `/latest`. No real network.
+// Hand-made responses in the shape of `/1h` (prices/testing.ts). No real network.
 
-const SECONDS = 1_794_830_400; // 2026-11-16T12:00:00Z
-const ISO = '2026-11-16T12:00:00.000Z';
+const H = Date.parse('2026-11-16T12:00:00.000Z');
 
-/** `count` items from ID 1000, each `{ high: id, low: id − 1 }`. */
-function latest(count: number, extra: Record<string, unknown> = {}) {
-  const data: Record<string, unknown> = {};
-  for (let id = 1000; id < 1000 + count; id++) {
-    data[String(id)] = { high: id, highTime: SECONDS, low: id - 1, lowTime: SECONDS - 60 };
-  }
-  return { data: { ...data, ...extra } };
-}
-
-describe('parseLatestPrices', () => {
-  it('reads prices and times, with either side missing', () => {
-    const prices = parseLatestPrices(
-      latest(MIN_PRICE_ITEMS, {
-        '2': { high: 185, highTime: SECONDS, low: null, lowTime: null },
-        '6': { high: null, highTime: null, low: 2_500_000_000, lowTime: SECONDS },
+describe('parseHourBucket', () => {
+  it('reads every item with its value (average × volume, whole gp) and volume per side', () => {
+    const bucket = parseHourBucket(
+      hourResponse(H, {
+        4151: { high: [1_500_000.25, 4], low: [1_490_000.5, 3] },
+        2: { low: [180, 7] },
       }),
+      H,
     );
-    expect(prices).toHaveLength(MIN_PRICE_ITEMS + 2);
-    expect(prices.find((row) => row.itemId === 2)).toEqual({
+    expect(bucket.hourStart).toBe('2026-11-16T12:00:00.000Z');
+    expect(bucket.items).toHaveLength(MIN_PRICE_ITEMS + 2);
+    expect(bucket.items.find((item) => item.itemId === 4151)).toEqual({
+      itemId: 4151,
+      highValue: 6_000_001,
+      highVolume: 4,
+      lowValue: 4_470_002, // 4 470 001.5, rounded
+      lowVolume: 3,
+    });
+    expect(bucket.items.find((item) => item.itemId === 2)).toEqual({
       itemId: 2,
-      high: 185,
-      highTime: ISO,
-      low: null,
-      lowTime: null,
+      highValue: 0,
+      highVolume: 0,
+      lowValue: 1_260,
+      lowVolume: 7,
     });
-    // Prices can pass 32 bits.
-    expect(prices.find((row) => row.itemId === 6)).toEqual({
-      itemId: 6,
-      high: null,
-      highTime: null,
-      low: 2_500_000_000,
-      lowTime: ISO,
-    });
-    expect(prices.find((row) => row.itemId === 1000)?.lowTime).toBe('2026-11-16T11:59:00.000Z');
+    expect(bucket.skipped).toBe(0);
   });
 
-  it('leaves out an item with neither side', () => {
-    const prices = parseLatestPrices(
-      latest(MIN_PRICE_ITEMS, { '7': { high: null, highTime: null, low: null, lowTime: null } }),
-    );
-    expect(prices.some((row) => row.itemId === 7)).toBe(false);
-    expect(prices).toHaveLength(MIN_PRICE_ITEMS);
-  });
-
-  const ok = { high: 5, highTime: SECONDS, low: 4, lowTime: SECONDS };
+  const entry = { avgHighPrice: 10, highPriceVolume: 1, avgLowPrice: 9, lowPriceVolume: 1 };
+  const withItem = (item: unknown) => {
+    const body = hourResponse(H);
+    body.data['4151'] = item;
+    return body;
+  };
 
   it.each([
-    ['an array', [], /unexpected format/],
-    ['a string', 'nope', /unexpected format/],
-    ['null', null, /unexpected format/],
-    ['an error object', { error: 'Too many requests' }, /unexpected format/],
-    ['the item map without the data wrapper', latest(MIN_PRICE_ITEMS).data, /unexpected format/],
+    ['not an object', 'nope', 'unexpected format'],
+    ['no data', { timestamp: H / 1000 }, 'at data'],
+    ['no timestamp', { data: hourResponse(H).data }, 'at timestamp'],
+    ['an extra top-level field', { ...hourResponse(H), extra: 1 }, 'unrecognized_keys'],
+    ['an extra item field', withItem({ ...entry, extra: 1 }), 'at data.4151'],
+    ['a missing item field', withItem({ avgHighPrice: 10, highPriceVolume: 1 }), 'at data.4151'],
     [
-      'a new top-level field',
-      { ...latest(MIN_PRICE_ITEMS), timestamp: SECONDS },
-      /unexpected format/,
+      'a price as a string',
+      withItem({ ...entry, avgHighPrice: '10' }),
+      'at data.4151.avgHighPrice',
     ],
     [
-      'a new field on an item',
-      latest(MIN_PRICE_ITEMS, { '2': { ...ok, volume: 7 } }),
-      /at data\.2/,
+      'a negative volume',
+      withItem({ ...entry, lowPriceVolume: -1 }),
+      'at data.4151.lowPriceVolume',
+    ],
+    ['a fractional volume', withItem({ ...entry, lowPriceVolume: 1.5 }), 'lowPriceVolume'],
+    ['a null average with trades', withItem({ ...entry, avgHighPrice: null }), 'at data.4151'],
+    ['an average without trades', withItem({ ...entry, highPriceVolume: 0 }), 'at data.4151'],
+    [
+      'an item ID that is not a number',
+      { ...hourResponse(H), data: { abc: entry } },
+      'at data.abc',
     ],
     [
-      'a missing field on an item',
-      latest(MIN_PRICE_ITEMS, { '2': { high: 5, low: 4 } }),
-      /at data\.2/,
+      'a timestamp that is not an hour',
+      { ...hourResponse(H), timestamp: H / 1000 + 60 },
+      'timestamp',
     ],
-    [
-      'a price with decimals',
-      latest(MIN_PRICE_ITEMS, { '2': { ...ok, high: 100.9 } }),
-      /at data\.2\.high/,
-    ],
-    ['a negative price', latest(MIN_PRICE_ITEMS, { '2': { ...ok, low: -5 } }), /at data\.2\.low/],
-    ['a price as text', latest(MIN_PRICE_ITEMS, { '2': { ...ok, low: '4' } }), /at data\.2\.low/],
-    [
-      'a time in milliseconds',
-      latest(MIN_PRICE_ITEMS, { '2': { ...ok, highTime: SECONDS * 1000 } }),
-      /at data\.2\.highTime/,
-    ],
-    [
-      'a time as text',
-      latest(MIN_PRICE_ITEMS, { '2': { ...ok, lowTime: 'yesterday' } }),
-      /at data\.2\.lowTime/,
-    ],
-    ['an item that is not an object', latest(MIN_PRICE_ITEMS, { '2': 'nothing' }), /at data\.2/],
-    ['a key that is not an item ID', latest(MIN_PRICE_ITEMS, { abc: ok }), /at data\.abc/],
-    ['a negative item ID', latest(MIN_PRICE_ITEMS, { '-3': ok }), /at data\.-3/],
-    ['an item ID with a leading zero', latest(MIN_PRICE_ITEMS, { '01': ok }), /at data\.01/],
-    ['too few items', latest(MIN_PRICE_ITEMS - 1), /only 99 usable items/],
-    ['an empty map', { data: {} }, /only 0 usable items/],
-  ])('rejects %s', (_name, body, message) => {
-    expect(() => parseLatestPrices(body)).toThrow(PricesFormatError);
-    expect(() => parseLatestPrices(body)).toThrow(message);
+  ])('refuses %s', (_name, body, message) => {
+    expect(() => parseHourBucket(body, H)).toThrow(PricesFormatError);
+    expect(() => parseHourBucket(body, H)).toThrow(message);
   });
 
   it('never puts values from the response in the error', () => {
-    const body = latest(MIN_PRICE_ITEMS, { '2': { ...ok, low: 'secret-value' } });
     try {
-      parseLatestPrices(body);
+      parseHourBucket(withItem({ ...entry, avgHighPrice: 'secret-value' }), H);
       expect.unreachable();
     } catch (error) {
-      expect((error as Error).message).not.toContain('secret-value');
+      expect(String(error)).not.toContain('secret-value');
     }
+  });
+
+  it('refuses a response for another hour (a wrong clock, a cache) and one with too few items', () => {
+    expect(() => parseHourBucket(hourResponse(H + HOUR), H)).toThrow('for another hour');
+    expect(() => parseHourBucket(hourResponse(H, {}, MIN_PRICE_ITEMS - 1), H)).toThrow(
+      `only ${String(MIN_PRICE_ITEMS - 1)} usable items`,
+    );
+    // An empty hour, as for a time the wiki has no data for yet.
+    expect(() => parseHourBucket({ data: {}, timestamp: H / 1000 }, H)).toThrow('only 0');
+  });
+
+  it('leaves out an item whose sums would be too large to add up exactly', () => {
+    const bucket = parseHourBucket(
+      hourResponse(H, { 4151: { high: [MAX_HOUR_SUM, 2] }, 2: { low: [MAX_HOUR_SUM, 1] } }),
+      H,
+    );
+    expect(bucket.skipped).toBe(1);
+    expect(bucket.items.map((item) => item.itemId)).toContain(2);
+    expect(bucket.items.map((item) => item.itemId)).not.toContain(4151);
   });
 });
 
-describe('refreshPrices', () => {
+describe('storing hours', () => {
+  let database: Database | undefined;
+  afterEach(() => {
+    database?.close();
+    database = undefined;
+  });
+  const setup = () => (database = testDatabase()).db;
+
+  it('stores the hour, its items and its day, and adds a second hour to the same day', () => {
+    const db = setup();
+    storeHour(db, H, { 4151: { high: [110, 2], low: [100, 3] } });
+    storeHour(db, H + HOUR, { 4151: { low: [90, 1] } });
+    expect(db.select().from(priceHourFetches).all()).toEqual([
+      { hourStart: '2026-11-16T12:00:00.000Z', fetchedAt: '2026-11-16T13:15:00.000Z', items: 101 },
+      { hourStart: '2026-11-16T13:00:00.000Z', fetchedAt: '2026-11-16T14:15:00.000Z', items: 101 },
+    ]);
+    expect(
+      db
+        .select()
+        .from(priceHours)
+        .all()
+        .filter((row) => row.itemId === 4151),
+    ).toEqual([
+      {
+        hourStart: '2026-11-16T12:00:00.000Z',
+        itemId: 4151,
+        highValue: 220,
+        highVolume: 2,
+        lowValue: 300,
+        lowVolume: 3,
+      },
+      {
+        hourStart: '2026-11-16T13:00:00.000Z',
+        itemId: 4151,
+        highValue: 0,
+        highVolume: 0,
+        lowValue: 90,
+        lowVolume: 1,
+      },
+    ]);
+    expect(
+      db
+        .select()
+        .from(priceDays)
+        .all()
+        .find((row) => row.itemId === 4151),
+    ).toEqual({
+      day: '2026-11-16',
+      itemId: 4151,
+      highValue: 220,
+      highVolume: 2,
+      lowValue: 390,
+      lowVolume: 4,
+    });
+    expect(db.select().from(priceDayHours).all()).toEqual([{ day: '2026-11-16', hours: 2 }]);
+  });
+
+  it('never counts an hour twice in its day', () => {
+    const db = setup();
+    const bucket = parseHourBucket(hourResponse(H, { 4151: { low: [100, 1] } }), H);
+    expect(storeHourBucket(db, bucket, new Date(H + HOUR))).toBe(true);
+    expect(storeHourBucket(db, bucket, new Date(H + 2 * HOUR))).toBe(false);
+    expect(db.select().from(priceDayHours).all()).toEqual([{ day: '2026-11-16', hours: 1 }]);
+    expect(
+      db
+        .select()
+        .from(priceDays)
+        .all()
+        .find((row) => row.itemId === 4151)?.lowVolume,
+    ).toBe(1);
+  });
+
+  it('keeps the 48 hours up to the newest and 35 days, counted from the newest hour', () => {
+    const db = setup();
+    const first = Date.parse('2026-10-01T00:00:00.000Z');
+    // 40 days of hours: every day complete.
+    storeHours(db, first, 40 * 24);
+    const newest = first + (40 * 24 - 1) * HOUR;
+    const hours = db.select().from(priceHourFetches).all();
+    expect(hours).toHaveLength(PRICE_HOURS_KEPT);
+    expect(hours[0]?.hourStart).toBe(
+      new Date(newest - (PRICE_HOURS_KEPT - 1) * HOUR).toISOString(),
+    );
+    expect(db.select().from(priceHours).all()).toHaveLength(PRICE_HOURS_KEPT * MIN_PRICE_ITEMS);
+    const days = db.select().from(priceDayHours).all();
+    expect(days).toHaveLength(PRICE_DAYS_KEPT);
+    expect(days.every((day) => day.hours === 24)).toBe(true);
+    expect(days[0]?.day).toBe('2026-10-06'); // 9 November, the newest day, minus 34
+    expect(
+      new Set(
+        db
+          .select()
+          .from(priceDays)
+          .all()
+          .map((row) => row.day),
+      ).size,
+    ).toBe(PRICE_DAYS_KEPT);
+  });
+
+  it('prunes nothing when an older missing hour is stored', () => {
+    const db = setup();
+    storeHour(db, H);
+    storeHour(db, H - 10 * HOUR);
+    expect(db.select().from(priceHourFetches).all()).toHaveLength(2);
+  });
+});
+
+describe('missingHours', () => {
+  let database: Database | undefined;
+  afterEach(() => {
+    database?.close();
+    database = undefined;
+  });
+
+  it('asks only for hours that ended at least the settle time ago', () => {
+    database = testDatabase();
+    expect(PRICE_HOUR_SETTLE_MS).toBe(10 * 60 * 1000);
+    // 13:09: the 12:00 hour ended 9 minutes ago, so 11:00 is the newest settled one.
+    expect(latestSettledHour(H + HOUR + 9 * 60 * 1000)).toBe(H - HOUR);
+    expect(latestSettledHour(H + HOUR + 10 * 60 * 1000)).toBe(H);
+  });
+
+  it('gives the missing hours of the last 48, oldest first', () => {
+    database = testDatabase();
+    const db = database.db;
+    const now = H + HOUR + 15 * 60 * 1000; // newest settled: H
+    const all = missingHours(db, now);
+    expect(all).toHaveLength(PRICE_CATCHUP_MAX);
+    expect(all[0]).toBe(H - 47 * HOUR);
+    expect(all.at(-1)).toBe(H);
+    storeHour(db, H - 47 * HOUR);
+    storeHour(db, H - 2 * HOUR);
+    const rest = missingHours(db, now);
+    expect(rest).toHaveLength(46);
+    expect(rest).not.toContain(H - 2 * HOUR);
+    expect(rest[0]).toBe(H - 46 * HOUR);
+  });
+
+  it('never asks again for an hour pruning has passed, also with a clock that is behind', () => {
+    database = testDatabase();
+    const db = database.db;
+    storeHours(db, H - 47 * HOUR, 48);
+    expect(missingHours(db, H + HOUR + 15 * 60 * 1000)).toEqual([]);
+    // The clock goes back three days: those hours were never stored, but
+    // they are older than what is kept, so they are not fetched.
+    expect(missingHours(db, H - 3 * DAY)).toEqual([]);
+  });
+});
+
+describe('fetchMissingHours', () => {
   let database: Database | undefined;
   afterEach(() => {
     database?.close();
@@ -135,183 +291,204 @@ describe('refreshPrices', () => {
   });
 
   const silent = { info: () => undefined, warn: () => undefined, error: () => undefined };
-  const warnings: [object, string][] = [];
-  const log = {
-    ...silent,
-    warn: (fields: object, message: string) => void warnings.push([fields, message]),
-  };
 
-  function setup() {
+  function setup(nowMs = H + HOUR + 15 * 60 * 1000) {
     database = testDatabase();
     const db = database.db;
-    let nowMs = Date.parse('2026-11-16T12:00:00.000Z');
+    let clock = nowMs;
     const paths: string[] = [];
-    let reply: () => unknown = () => latest(MIN_PRICE_ITEMS);
+    // An Error is thrown as the request's failure; anything else is the response body.
+    let fail: ((hourMs: number) => unknown) | undefined;
     const client: ExternalClient = {
       getJson(source, path) {
         paths.push(`${source} ${path}`);
-        nowMs += 1500; // the request takes a while
-        try {
-          return Promise.resolve(reply());
-        } catch (error) {
-          return Promise.reject(error instanceof Error ? error : new Error('failed'));
-        }
+        clock += 10_000; // the source's spacing
+        const hourMs =
+          Number(new URL(path, 'https://x.example').searchParams.get('timestamp')) * 1000;
+        const result = fail?.(hourMs);
+        if (result instanceof Error) return Promise.reject(result);
+        if (result !== undefined) return Promise.resolve(result);
+        return Promise.resolve(hourResponse(hourMs, { 4151: { low: [100, 1] } }));
       },
       getText() {
         return Promise.reject(new Error('getText is not used for prices'));
       },
     };
+    const warnings: string[] = [];
+    const log = { ...silent, warn: (_obj: object, msg: string) => void warnings.push(msg) };
     return {
       db,
       paths,
-      advance: (ms: number) => (nowMs += ms),
-      replyWith: (next: () => unknown) => (reply = next),
-      refresh: () => refreshPrices({ db, client, log, now: () => new Date(nowMs) }),
-      rows: () => db.select().from(itemPrices).all(),
-      history: () => db.select().from(itemPriceHistory).all(),
+      warnings,
+      failWith: (next: typeof fail) => (fail = next),
+      run: (stopped?: () => boolean) =>
+        fetchMissingHours({
+          db,
+          client,
+          log,
+          now: () => new Date(clock),
+          ...(stopped ? { stopped } : {}),
+        }),
+      hours: () =>
+        db
+          .select()
+          .from(priceHourFetches)
+          .all()
+          .map((row) => Date.parse(row.hourStart)),
+      failures: () => db.select().from(priceHourFailures).all(),
+      now: () => clock,
       state: () => sourceState(db, 'WIKI_PRICES'),
     };
   }
 
-  it('fetches every item in one request and stores it', async () => {
+  const ts = (hourMs: number) => `WIKI_PRICES ${HOUR_PATH}?timestamp=${String(hourMs / 1000)}`;
+
+  it('fetches every missing hour once, oldest first, at most 48, without an id', async () => {
     const t = setup();
-    expect(await t.refresh()).toBe(true);
-    expect(t.paths).toEqual([`WIKI_PRICES ${PRICES_PATH}`]);
-    expect(PRICES_PATH).not.toContain('?');
-    expect(t.rows()).toHaveLength(MIN_PRICE_ITEMS);
-    expect(t.rows()[0]).toEqual({
-      itemId: 1000,
-      high: 1000,
-      highTime: ISO,
-      low: 999,
-      lowTime: '2026-11-16T11:59:00.000Z',
-      fetchedAt: '2026-11-16T12:00:01.500Z',
-    });
-    expect(t.state()).toEqual({
-      source: 'WIKI_PRICES',
-      lastAttemptAt: '2026-11-16T12:00:00.000Z',
-      lastSuccessAt: '2026-11-16T12:00:01.500Z',
-      lastError: null,
-      lastErrorAt: null,
-    });
+    expect(await t.run()).toBe(PRICE_CATCHUP_MAX);
+    expect(t.paths).toHaveLength(PRICE_CATCHUP_MAX);
+    expect(t.paths[0]).toBe(ts(H - 47 * HOUR));
+    expect(t.paths.at(-1)).toBe(ts(H));
+    expect(t.paths.every((path) => !path.includes('id='))).toBe(true);
+    expect(t.hours()).toHaveLength(PRICE_CATCHUP_MAX);
+    // Nothing left: a second run makes no request.
+    expect(await t.run()).toBe(0);
+    expect(t.paths).toHaveLength(PRICE_CATCHUP_MAX);
+    expect(t.state()).toMatchObject({ lastError: null });
   });
 
-  it('updates items that are in a newer response and keeps the ones that are not', async () => {
+  it('stops at the first failure, keeps what it stored, and records the error', async () => {
     const t = setup();
-    await t.refresh();
-    t.advance(3_600_000);
-    t.replyWith(() => {
-      // One new item (the last ID), one changed (1000) and one gone (1001).
-      const body = latest(MIN_PRICE_ITEMS + 1, {
-        '1000': { high: 5, highTime: SECONDS, low: null, lowTime: null },
-      });
-      delete (body.data as Record<string, unknown>)['1001'];
-      return body;
-    });
-    expect(await t.refresh()).toBe(true);
-    const byId = new Map(t.rows().map((row) => [row.itemId, row]));
-    expect(byId.size).toBe(MIN_PRICE_ITEMS + 1);
-    expect(byId.get(1000)).toMatchObject({ high: 5, low: null, lowTime: null });
-    expect(byId.get(1000)?.fetchedAt).toBe('2026-11-16T13:00:03.000Z');
-    expect(byId.get(1001)).toMatchObject({ high: 1001, fetchedAt: '2026-11-16T12:00:01.500Z' });
+    t.failWith((hourMs) =>
+      hourMs === H - 40 * HOUR ? new ExternalRequestError('HTTP 503 from the source') : undefined,
+    );
+    expect(await t.run()).toBe(7);
+    expect(t.paths).toHaveLength(8);
+    expect(t.hours()).toHaveLength(7);
+    expect(t.state()).toMatchObject({ lastError: 'HTTP 503 from the source' });
+    expect(t.warnings).toEqual(['Price update failed, keeping the prices stored so far']);
+    // The next run starts again at the hour that failed.
+    t.failWith(undefined);
+    await t.run();
+    expect(t.paths[8]).toBe(ts(H - 40 * HOUR));
+    expect(t.hours()).toHaveLength(PRICE_CATCHUP_MAX);
+    expect(t.state()).toMatchObject({ lastError: null });
+  });
+
+  /** The bad hour of the tests below: in the middle of a full catch-up. */
+  const BAD = H - 40 * HOUR;
+  const badHour = (hourMs: number) => (hourMs === BAD ? hourResponse(hourMs, {}, 3) : undefined);
+
+  it('goes on after a bad hour, so newer hours are stored', async () => {
+    const t = setup();
+    t.failWith(badHour);
+    expect(await t.run()).toBe(PRICE_CATCHUP_MAX - 1);
+    expect(t.paths).toHaveLength(PRICE_CATCHUP_MAX);
+    expect(t.hours()).toHaveLength(PRICE_CATCHUP_MAX - 1);
+    expect(t.hours()).not.toContain(BAD);
+    expect(Math.max(...t.hours())).toBe(H);
+    expect(t.warnings).toEqual([
+      'An hour of prices had an unexpected response; going on with the next hours',
+    ]);
+  });
+
+  it('asks for a bad hour again in later runs, and skips it after 3 failed runs', async () => {
+    const t = setup();
+    t.failWith(badHour);
+    await t.run();
+    expect(t.failures()).toEqual([
+      expect.objectContaining({
+        hourStart: new Date(BAD).toISOString(),
+        failures: 1,
+        skippedAt: null,
+      }),
+    ]);
+    // Runs 2 and 3 ask for that hour only: everything else is stored.
+    await t.run();
+    await t.run();
+    expect(t.paths.slice(PRICE_CATCHUP_MAX)).toEqual([ts(BAD), ts(BAD)]);
+    expect(t.failures()).toEqual([
+      expect.objectContaining({ failures: 3, skippedAt: expect.any(String) as unknown }),
+    ]);
+    // Skipped: never asked for again, and missing in the windows.
+    expect(await t.run()).toBe(0);
+    expect(t.paths).toHaveLength(PRICE_CATCHUP_MAX + 2);
+    expect(missingHours(t.db, t.now())).toEqual([]);
+    expect(t.hours()).not.toContain(BAD);
+  });
+
+  it('forgets the failures of an hour once it is stored', async () => {
+    const t = setup();
+    t.failWith(badHour);
+    await t.run();
+    t.failWith(undefined);
+    await t.run();
+    expect(t.hours()).toContain(BAD);
+    expect(t.failures()).toEqual([]);
+  });
+
+  it('stops at a network error and counts it against no hour', async () => {
+    const t = setup();
+    t.failWith((hourMs) =>
+      hourMs === BAD ? new ExternalRequestError('Network error') : undefined,
+    );
+    for (let run = 0; run < 5; run++) await t.run();
+    // Every run stopped at that hour and asked for it again.
+    expect(t.paths.filter((path) => path === ts(BAD))).toHaveLength(5);
+    expect(t.hours()).toHaveLength(7);
+    expect(t.failures()).toEqual([]);
   });
 
   it.each([
-    [
-      'the request fails',
-      () => Promise.reject(new ExternalRequestError('HTTP 503', 503)),
-      'HTTP 503',
-    ],
-    [
-      'the response has the wrong shape',
-      () => ({ error: 'nope' }),
-      'The price response had an unexpected format at data: invalid_type',
-    ],
-    [
-      'something unexpected is thrown',
-      () => {
-        throw new Error('secret detail');
-      },
-      'Unexpected error, see the server log',
-    ],
-    [
-      'the source was turned off',
-      () => {
-        throw new ExternalDisabledError('off');
-      },
-      'Unexpected error, see the server log',
-    ],
-  ])('keeps the last good prices when %s', async (_name, reply, message) => {
-    const t = setup();
-    await t.refresh();
-    const before = t.rows();
-    const history = t.history();
-    // One history row per item of the good fetch.
-    expect(history).toHaveLength(MIN_PRICE_ITEMS);
-    t.advance(3_600_000);
-    t.replyWith(reply);
-    expect(await t.refresh()).toBe(false);
-    expect(t.rows()).toEqual(before);
-    // A failed fetch adds nothing to the history and prunes nothing.
-    expect(t.history()).toEqual(history);
-    expect(t.state()).toEqual({
-      source: 'WIKI_PRICES',
-      lastAttemptAt: '2026-11-16T13:00:01.500Z',
-      lastSuccessAt: '2026-11-16T12:00:01.500Z',
-      lastError: message,
-      lastErrorAt: '2026-11-16T13:00:03.000Z',
-    });
+    ['a format error', () => ({ data: {}, timestamp: 0 }), 'unexpected format'],
+    ['too few items', (hourMs: number) => hourResponse(hourMs, {}, 3), 'usable items'],
+    ['another hour', (hourMs: number) => hourResponse(hourMs + HOUR), 'another hour'],
+  ])(
+    'stores nothing for %s, counts it against each hour and goes on',
+    async (_name, reply, message) => {
+      const t = setup();
+      t.failWith(reply);
+      expect(await t.run()).toBe(0);
+      expect(t.paths).toHaveLength(PRICE_CATCHUP_MAX);
+      expect(t.hours()).toEqual([]);
+      expect(t.failures()).toHaveLength(PRICE_CATCHUP_MAX);
+      expect(t.state()?.lastError).toContain(message);
+      // One warning for the run, not one per hour.
+      expect(t.warnings).toHaveLength(1);
+    },
+  );
 
-    // The next good fetch clears the error.
-    t.advance(3_600_000);
-    t.replyWith(() => latest(MIN_PRICE_ITEMS));
-    expect(await t.refresh()).toBe(true);
-    expect(t.state()).toMatchObject({ lastError: null, lastErrorAt: null });
+  it.each([
+    ['an unexpected error', () => new Error('boom secret'), 'Unexpected error, see the server log'],
+    ['a disabled source', () => new ExternalDisabledError('WIKI_PRICES'), 'Unexpected error'],
+  ])(
+    'stops at %s, stores nothing and shows only its own message',
+    async (_name, reply, message) => {
+      const t = setup();
+      t.failWith(reply);
+      expect(await t.run()).toBe(0);
+      expect(t.paths).toHaveLength(1);
+      expect(t.hours()).toEqual([]);
+      expect(t.failures()).toEqual([]);
+      expect(t.state()?.lastError).toContain(message);
+      expect(t.state()?.lastError).not.toContain('secret');
+    },
+  );
+
+  it('ends between requests when stopped', async () => {
+    const t = setup();
+    let left = 3;
+    expect(await t.run(() => left-- <= 0)).toBe(3);
+    expect(t.paths).toHaveLength(3);
   });
 
-  it('stores a fetch on a wrong clock like any other, and warns once with the two times', async () => {
-    warnings.length = 0;
+  it('warns when an item was left out for its size', async () => {
     const t = setup();
-    await t.refresh();
-    t.advance(3_600_000);
-    await t.refresh();
-    expect(warnings).toEqual([]);
-    const before = t.history();
-
-    // The clock jumps two months ahead.
-    t.advance(61 * 24 * 3_600_000);
-    expect(await t.refresh()).toBe(true);
-    // Nothing deleted: the two earlier fetches are still there, plus the new one.
-    expect(t.history()).toHaveLength(3 * MIN_PRICE_ITEMS);
-    expect(t.history()).toEqual(expect.arrayContaining(before));
-    expect(warnings).toHaveLength(1);
-    // Only the two times.
-    expect(warnings[0]?.[0]).toEqual({
-      fetchedAt: '2027-01-16T13:00:04.500Z',
-      previousAt: '2026-11-16T13:00:03.000Z',
-    });
-    expect(warnings[0]?.[1]).toMatch(/more than a day after the previous stored one, or before it/);
-
-    // Still ahead an hour later: that fetch follows on, so no warning.
-    t.advance(3_600_000);
-    await t.refresh();
-    expect(warnings).toHaveLength(1);
-
-    // The clock is put right: the fetch is before the newest stored one.
-    t.advance(-61 * 24 * 3_600_000);
-    await t.refresh();
-    expect(warnings).toHaveLength(2);
-    expect(warnings[1]?.[0]).toEqual({
-      fetchedAt: '2026-11-16T14:00:07.500Z',
-      previousAt: '2027-01-16T14:00:06.000Z',
-    });
-    // The fetches after that follow on from it: no more warnings.
-    t.advance(3_600_000);
-    await t.refresh();
-    t.advance(3_600_000);
-    await t.refresh();
-    expect(warnings).toHaveLength(2);
-    // All seven fetches are kept: nothing is pruned by the clock.
-    expect(t.history()).toHaveLength(7 * MIN_PRICE_ITEMS);
+    t.failWith((hourMs) =>
+      hourMs === H ? hourResponse(hourMs, { 4151: { high: [MAX_HOUR_SUM, 9] } }) : undefined,
+    );
+    await t.run();
+    expect(t.warnings).toEqual(['Price items left out of an hour: their sums were too large']);
+    expect(FILLER_FROM).toBeGreaterThan(4151);
   });
 });

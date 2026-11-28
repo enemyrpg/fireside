@@ -1,12 +1,12 @@
 {
   "prices": {
     "source": "CURRENT",
-    "fetchedAt": "2026-11-21T12:00:04.000Z"
+    "fetchedAt": "2026-11-21T12:15:00.000Z"
   },
   "periods": [
     {
       "period": "1y",
-      "baselineAt": "2026-11-20T12:00:03.000Z",
+      "baselineAt": "2026-11-20T12:00:00.000Z",
       "change": 8980,
       "items": [
         {

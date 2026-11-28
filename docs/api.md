@@ -55,6 +55,11 @@ time (both `null` while it is open), or `null` without sessions (since 1.42.0).
 These are facts; the dashboard decides "Online" from them with its own clock
 (see [Online](design.md#online)).
 
+In `…/bank/price-movers`, each period's `baselineAt` is the end of the window
+of trades compared with (since 1.42.1; before, the time of an earlier fetch).
+The shape is unchanged. How the windows are chosen:
+[architecture.md](architecture.md#external-sources).
+
 The routes live in [`server/src/routes/`](../server/src/routes/), one file per
 group. The shared error and pagination parts are in
 [`common.ts`](../shared/src/schemas/api/common.ts).

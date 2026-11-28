@@ -456,7 +456,9 @@ export const bankHistoryResponseSchema = z
 
 /**
  * Periods of `…/bank/price-movers`, shortest first. A period compares the
- * current price with the stored fetch nearest to that long ago.
+ * current price (the last 24 hours of trades) with the same rule over an
+ * earlier window: the 24 hours before for `24h`, the UTC day nearest to 7 or
+ * 30 days earlier for `7d` and `30d` (since 1.42.1; before, single fetches).
  */
 export const PRICE_MOVER_PERIODS = ['24h', '7d', '30d'] as const;
 export const priceMoverPeriodSchema = z.enum(PRICE_MOVER_PERIODS);
@@ -468,7 +470,7 @@ const priceMoverFields = {
   name: z.string().min(1),
   /** The current GE price of the full item: the one `bank` uses. */
   priceEach: positiveInt,
-  /** The price at the period's `baselineAt`, by the same rule. */
+  /** The price over the window that ends at the period's `baselineAt`, by the same rule. */
   previousPriceEach: positiveInt,
   /** Value now minus value then, for the amount held now. Never 0. */
   change: safeInt,
@@ -498,7 +500,10 @@ export const priceMoverItemSchema = z
 export const priceMoverPeriodResultSchema = z
   .strictObject({
     period: priceMoverPeriodSchema,
-    /** When the prices compared against were fetched. */
+    /**
+     * The end of the window of trades compared against (since 1.42.1; before,
+     * when the prices compared against were fetched).
+     */
     baselineAt: utcTimestamp,
     /** Sum of the items' `change`. */
     change: safeInt,

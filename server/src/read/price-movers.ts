@@ -8,14 +8,15 @@ import {
   type PriceMoversResponse,
 } from '@fireside/shared';
 import type { Queryable } from '../db/index.js';
-import { priceBaselines, pricesOfFetch } from '../prices/history.js';
+import { currentWindow, priceBaselines } from '../prices/history.js';
 import { bank, potionStorage } from './bank.js';
 import type { PriceLookup } from './prices.js';
 
 // `GET …/bank/price-movers`: how price changes moved the value of what the
 // accounts hold now. Holdings and current prices are exactly those of `bank`
-// and `potion-storage`; the earlier prices come from `item_price_history`.
-// Reads only: nothing is fetched and the history is never pruned here.
+// and `potion-storage`; the earlier prices are the same rule over earlier
+// windows of stored hours and days (prices/history.ts). Reads only: nothing
+// is fetched and nothing is pruned here.
 
 /** What is held of one item, at the current price. */
 type Holding =
@@ -80,8 +81,9 @@ function holdings(db: Queryable, accountIds: readonly number[], prices: PriceLoo
 
 /**
  * The periods that have a baseline, each with every held item whose value
- * moved. An item without a price in the baseline fetch is left out, and so
- * is one whose value is the same: neither adds to the sum.
+ * moved. An item is compared only when its current price is from the
+ * current 24 h window and it traded in the baseline window too; one whose
+ * value is the same is left out as well: neither adds to the sum.
  */
 export function priceMovers(
   db: Queryable,
@@ -90,16 +92,18 @@ export function priceMovers(
 ): PriceMoversResponse {
   const { fetchedAt } = prices.prices;
   if (fetchedAt === null) return { prices: prices.prices, periods: [] };
-  // Only items the newest fetch has. `item_prices` keeps the row of an item
-  // that is missing from a newer response, and `bank` goes on using it, but
-  // here that old price would be compared with a baseline counted back from
-  // the newest fetch: a change over the wrong time. Such an item is left out.
-  const inCurrentFetch = pricesOfFetch(db, fetchedAt);
+  const window = currentWindow(db);
+  if (window === null) return { prices: prices.prices, periods: [] };
+  // Only items traded in the current window. An item priced from the 7 day
+  // or last-day fallback would be compared with a baseline counted back from
+  // the window's end: a change over the wrong time. Such an item is left out.
   const held = holdings(db, accountIds, prices).filter(
-    (item) => inCurrentFetch.get(item.itemId) === item.priceEach,
+    (item) => window.hours.get(item.itemId) === item.priceEach,
   );
   const periods: PriceMoverPeriodResult[] = [];
-  for (const baseline of priceBaselines(db, fetchedAt)) {
+  for (const baseline of priceBaselines(db, window)) {
+    // Only with a clock that was wrong when the last hour was stored.
+    if (baseline.baselineAt >= fetchedAt) continue;
     const items: PriceMoverItem[] = [];
     for (const item of held) {
       const previousPriceEach = baseline.priceOf.get(item.itemId);

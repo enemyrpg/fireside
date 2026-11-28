@@ -14,9 +14,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { z } from 'zod';
 import { buildApp } from '../app.js';
 import { rebuildDerivedTables } from '../admin/rebuild.js';
-import { accounts, itemPriceHistory } from '../db/schema.js';
-import { recordSuccess } from '../external/state.js';
-import { storePrices, type FetchedPrice } from '../prices/fetch.js';
+import { accounts, priceDays, priceHours } from '../db/schema.js';
+import { storeHours, type Trades } from '../prices/testing.js';
 import { PROJECTIONS } from '../projections/index.js';
 import {
   emptyRun,
@@ -418,26 +417,34 @@ describe('GET …/bank/history', () => {
   });
 });
 
-// The latest snapshots at current GE prices.
+// The latest snapshots at current GE prices: the volume-weighted average of
+// each item's trades in the 24 stored hours up to the newest one.
 describe('current GE prices', () => {
   const PRICES_ON = { PRICES_ENABLED: 'true', USER_AGENT_CONTACT: 'you@example.com' };
-  const FETCHED_AT = '2026-11-10T11:30:00.000Z';
+  const HOUR = 3_600_000;
+  /** End of the newest stored hour: the current window is the 24 hours before it. */
+  const END = Date.parse('2026-11-10T11:00:00.000Z');
+  /** When the newest hour was stored (prices/testing.ts: 15 minutes after it ended). */
+  const FETCHED_AT = '2026-11-10T11:15:00.000Z';
   const CURRENT = { source: 'CURRENT', fetchedAt: FETCHED_AT };
   const SNAPSHOT = { source: 'SNAPSHOT', fetchedAt: null };
 
-  const priced = (itemId: number, high: number | null, low: number | null): FetchedPrice => ({
-    itemId,
-    high,
-    highTime: high === null ? null : '2026-11-10T11:00:00.000Z',
-    low,
-    lowTime: low === null ? null : '2026-11-10T11:00:00.000Z',
+  /** One trade an hour on each side given. */
+  const priced = (high: number | null, low: number | null): Trades => ({
+    ...(high === null ? {} : { high: [high, 1] as const }),
+    ...(low === null ? {} : { low: [low, 1] as const }),
   });
 
-  /** Stores fetched prices as a successful fetch would. */
-  function fetched(prices: readonly FetchedPrice[]): void {
-    const db = run!.database.db; // eslint-disable-line @typescript-eslint/no-non-null-assertion -- set by start()
-    storePrices(db, prices, new Date(FETCHED_AT));
-    recordSuccess(db, 'WIKI_PRICES', new Date(FETCHED_AT));
+  const db = () => run!.database.db; // eslint-disable-line @typescript-eslint/no-non-null-assertion -- set by start()
+
+  /** `count` hours up to `endMs`, every one with the same trades. */
+  function hours(endMs: number, count: number, trades: Readonly<Record<number, Trades>>): void {
+    storeHours(db(), endMs - count * HOUR, count, () => trades);
+  }
+
+  /** The current window: 24 hours up to `END` with `trades`. */
+  function fetched(trades: Readonly<Record<number, Trades>>): void {
+    hours(END, 24, trades);
   }
 
   const events = () => {
@@ -475,14 +482,14 @@ describe('current GE prices', () => {
     ];
   };
 
-  const wiki = [
-    priced(4151, 1_200_001, 1_100_000), // midpoint 1 150 000.5 → 1 150 000
-    priced(11832, null, 28_000_000),
-    priced(995, 5, 5),
-    priced(13204, 1100, 1100),
-    priced(1755, 80, 60),
-    priced(12695, 13_000, 12_000), // 12 500 per 4 doses
-  ];
+  const wiki: Record<number, Trades> = {
+    4151: priced(1_200_001, 1_100_000), // (1 200 001 + 1 100 000) ÷ 2, rounded down → 1 150 000
+    11832: priced(null, 28_000_000),
+    995: priced(5, 5),
+    13204: priced(1100, 1100),
+    1755: priced(80, 60),
+    12695: priced(13_000, 12_000), // 12 500 per 4 doses
+  };
 
   it('values the latest bank, inventory and equipment at current prices, item by item', async () => {
     start(events(), NOW, PRICES_ON);
@@ -584,37 +591,38 @@ describe('current GE prices', () => {
 
   // --- Price movers ---------------------------------------------
 
-  /** Earlier fetches, oldest first, then the current one (`wiki` at `FETCHED_AT`). */
-  function history(earlier: readonly [string, readonly FetchedPrice[]][]): void {
-    const db = run!.database.db; // eslint-disable-line @typescript-eslint/no-non-null-assertion -- set by start()
-    for (const [at, prices] of earlier) storePrices(db, prices, new Date(at));
+  /** 24 h before `END` (the end of the 24 h baseline window). */
+  const DAY_AGO = '2026-11-09T11:00:00.000Z';
+  /** The UTC day 7 d compares with: the middle of the window (9 Nov 23:00) minus 7 days. */
+  const WEEK_DAY = Date.parse('2026-11-02T00:00:00.000Z');
+  const WEEK_AGO = '2026-11-03T00:00:00.000Z';
+  // 12 500 for the potion then as now, and no trades of 11832.
+  const weekAgo: Record<number, Trades> = {
+    4151: priced(1_150_000, 1_150_000),
+    12695: priced(12_000, 12_000),
+  };
+  const dayAgo: Record<number, Trades> = {
+    4151: priced(1_000_000, 1_000_000),
+    11832: priced(null, 29_000_000),
+    12695: priced(12_500, 12_500),
+    995: priced(4, 4),
+    13204: priced(900, 900),
+    1755: priced(10, 10),
+  };
+
+  /** A whole UTC day for 7 d, the 24 h baseline window, then the current one (`wiki`). */
+  function history({ week = true }: { week?: boolean } = {}): void {
+    if (week) hours(WEEK_DAY + 24 * HOUR, 24, weekAgo);
+    hours(END - 24 * HOUR, 24, dayAgo);
     fetched(wiki);
   }
 
-  const DAY_AGO = '2026-11-09T11:30:00.000Z';
-  const WEEK_AGO = '2026-11-03T12:00:00.000Z';
-  const earlier: [string, FetchedPrice[]][] = [
-    // 12 500 for the potion then as now, and no row for 11832.
-    [WEEK_AGO, [priced(4151, 1_150_000, 1_150_000), priced(12695, 12_000, 12_000)]],
-    [
-      DAY_AGO,
-      [
-        priced(4151, 1_000_000, 1_000_000),
-        priced(11832, null, 29_000_000),
-        priced(12695, 12_500, 12_500),
-        priced(995, 4, 4),
-        priced(13204, 900, 900),
-        priced(1755, 10, 10),
-      ],
-    ],
-  ];
-
   it('gives the change per held item for each period that has earlier prices', async () => {
     start(events(), NOW, PRICES_ON);
-    history(earlier);
+    history();
     const movers = await get(api('all', 'bank/price-movers'), priceMoversResponseSchema);
     expect(movers.prices).toEqual(CURRENT);
-    // No 30 d: nothing was fetched about then.
+    // No 30 d: nothing is stored about then.
     expect(movers.periods.map((period) => period.period)).toEqual(['24h', '7d']);
     expect(movers.periods[0]).toEqual({
       period: '24h',
@@ -650,7 +658,7 @@ describe('current GE prices', () => {
       period: '7d',
       baselineAt: WEEK_AGO,
       change: 39_000,
-      // 11832 had no price in that fetch, and 4151 cost the same.
+      // 11832 had no trades that day, and 4151 cost the same.
       items: [
         {
           kind: 'POTION',
@@ -667,84 +675,53 @@ describe('current GE prices', () => {
     });
   });
 
-  it('leaves out an item the newest fetch does not have, though the bank still uses its old price', async () => {
+  it('leaves out an item without trades in the current window, though the bank still prices it', async () => {
     start(events(), NOW, PRICES_ON);
-    const db = run!.database.db; // eslint-disable-line @typescript-eslint/no-non-null-assertion -- set by start()
-    // A day ago both items had a price. The newest fetch has no 11832.
-    storePrices(db, earlier[1]![1], new Date(DAY_AGO)); // eslint-disable-line @typescript-eslint/no-non-null-assertion -- defined above
-    fetched(wiki.filter((price) => price.itemId !== 11832));
-    // The bank keeps the last price it has for 11832 (29M, from a day ago) …
+    // A day ago both items traded. The current window has no 11832.
+    hours(END - 24 * HOUR, 24, dayAgo);
+    fetched(Object.fromEntries(Object.entries(wiki).filter(([id]) => id !== '11832')));
+    // The bank prices 11832 from the last 7 days (29M, from a day ago) …
     const bank = await get(api('all', 'bank'), bankResponseSchema);
     expect(bank.banks[0]?.items.find((row) => row.itemId === 11832)).toMatchObject({
       gePriceEach: 29_000_000,
       gePriceSource: 'CURRENT',
     });
-    // … but that is not a price from now, so it is no price change.
+    // … but that is not a price from the window, so it is no price change.
     const movers = await get(api('all', 'bank/price-movers'), priceMoversResponseSchema);
     expect(movers.periods).toHaveLength(1);
     expect(movers.periods[0]?.items.map((row) => row.itemId)).toEqual([4151]);
     expect(movers.periods[0]?.change).toBe(450_000);
   });
 
-  it('uses the most recently stored fetch after a clock that was ahead, not the newest by time', async () => {
+  it('counts the windows back from the newest stored hour, also when it is days old', async () => {
     start(events(), NOW, PRICES_ON);
-    const db = run!.database.db; // eslint-disable-line @typescript-eslint/no-non-null-assertion -- set by start()
-    const HOUR = 3_600_000;
-    /** One fetch as the job stores it: the prices, the history and the time of the success. */
-    const fetchAt = (ms: number, whip: number) => {
-      storePrices(db, [priced(4151, whip, whip), priced(11832, null, 28_000_000)], new Date(ms));
-      recordSuccess(db, 'WIKI_PRICES', new Date(ms));
-    };
-    // A day and an hour of real hourly fetches: the whip costs 1M.
-    const first = Date.parse('2026-11-09T09:30:00.000Z');
-    for (let hour = 0; hour <= 25; hour++) fetchAt(first + hour * HOUR, 1_000_000);
-    // The clock is two months ahead for 10 fetches, with other prices.
-    const ahead = Date.parse('2027-01-10T11:30:00.000Z');
-    for (let hour = 0; hour < 10; hour++) fetchAt(ahead + hour * HOUR, 9_000_000);
-    // The clock is put right: two normal fetches, the whip at 1.15M.
-    fetchAt(Date.parse('2026-11-10T21:30:00.000Z'), 1_100_000);
-    fetchAt(Date.parse('2026-11-10T22:30:00.000Z'), 1_150_000);
-    // The forward-stamped fetches are still stored: a backward fetch deletes nothing.
-    const stamped = db
-      .selectDistinct({ at: itemPriceHistory.fetchedAt })
-      .from(itemPriceHistory)
-      .all()
-      .map((row) => row.at);
-    expect(stamped.filter((at) => at.startsWith('2027'))).toHaveLength(10);
-    expect(stamped).toHaveLength(26 + 10 + 2);
-
-    // Current is the fetch stored last, with the latest real prices …
-    const current = { source: 'CURRENT', fetchedAt: '2026-11-10T22:30:00.000Z' };
-    const bank = await get(api('all', 'bank'), bankResponseSchema);
-    expect(bank.prices).toEqual(current);
-    expect(bank.banks[0]?.items.find((row) => row.itemId === 4151)?.gePriceEach).toBe(1_150_000);
+    // Nothing stored since three days before END (the server was not used).
+    const old = END - 72 * HOUR;
+    hours(old - 24 * HOUR, 24, dayAgo);
+    hours(old, 24, wiki);
     const movers = await get(api('all', 'bank/price-movers'), priceMoversResponseSchema);
-    expect(movers.prices).toEqual(current);
-    // … and 24 h reaches back from that fetch, to the real one a day earlier.
-    expect(movers.periods).toEqual([
-      {
-        period: '24h',
-        baselineAt: '2026-11-09T22:30:00.000Z',
-        change: 450_000,
-        items: [
-          {
-            kind: 'ITEM',
-            itemId: 4151,
-            name: 'Item 4151',
-            quantity: 3,
-            priceEach: 1_150_000,
-            previousPriceEach: 1_000_000,
-            change: 450_000,
-          },
-        ],
-      },
+    expect(movers.prices).toEqual({ source: 'CURRENT', fetchedAt: '2026-11-07T11:15:00.000Z' });
+    expect(movers.periods.map(({ period, baselineAt }) => ({ period, baselineAt }))).toEqual([
+      { period: '24h', baselineAt: '2026-11-06T11:00:00.000Z' },
     ]);
+  });
+
+  it('keeps one odd trade from moving the price: the side with more trades wins', async () => {
+    start(events(), NOW, PRICES_ON);
+    hours(END - 24 * HOUR, 24, dayAgo);
+    // 4151 sells at 1M all day; one hour has a single insta-buy at 80M.
+    hours(END - HOUR, 23, { ...dayAgo, 4151: { low: [1_000_000, 3] } });
+    hours(END, 1, { ...dayAgo, 4151: { high: [80_000_000, 1], low: [1_000_000, 3] } });
+    const bank = await get(api('all', 'bank'), bankResponseSchema);
+    expect(bank.banks[0]?.items.find((row) => row.itemId === 4151)?.gePriceEach).toBe(1_000_000);
+    const movers = await get(api('all', 'bank/price-movers'), priceMoversResponseSchema);
+    expect(movers.periods[0]?.items.map((row) => row.itemId)).not.toContain(4151);
   });
 
   it('explains the change in net worth: the sum is the bank at the two sets of prices', async () => {
     start(events(), NOW, PRICES_ON);
-    // Every priced item has a row a day ago, so nothing is left out.
-    history([earlier[1]!]); // eslint-disable-line @typescript-eslint/no-non-null-assertion -- defined above
+    // Every priced item traded a day ago, so nothing is left out.
+    history({ week: false });
     const now = await get(api('all', 'bank/summary'), bankSummaryResponseSchema);
     const movers = await get(api('all', 'bank/price-movers'), priceMoversResponseSchema);
     // Net worth a day ago at the same holdings: 4151 × 3, 11832 × 2 and the potions.
@@ -770,7 +747,8 @@ describe('current GE prices', () => {
     const none = await get(api('all', 'bank/price-movers'), priceMoversResponseSchema);
     expect(none).toEqual({ prices: CURRENT, periods: [] });
 
-    history([earlier[1]!]); // eslint-disable-line @typescript-eslint/no-non-null-assertion -- defined above
+    // The hours before the window, fetched afterwards (a catch-up goes oldest first anyway).
+    hours(END - 24 * HOUR, 24, dayAgo);
     const all = await get(api('all', 'bank/price-movers'), priceMoversResponseSchema);
     expect(all.periods[0]?.items[0]).toMatchObject({ itemId: 4151, quantity: 13 });
     const b = await get(api(idOf(HASH_B), 'bank/price-movers'), priceMoversResponseSchema);
@@ -785,7 +763,7 @@ describe('current GE prices', () => {
     ['USER_AGENT_CONTACT is not set', { PRICES_ENABLED: 'true' }],
   ])('has no periods when %s, also with history stored', async (_name, env) => {
     start(events(), NOW, env);
-    history(earlier);
+    history();
     expect(await get(api('all', 'bank/price-movers'), priceMoversResponseSchema)).toEqual({
       prices: SNAPSHOT,
       periods: [],
@@ -794,7 +772,7 @@ describe('current GE prices', () => {
 
   it('is empty without a bank, 404 for an unknown account and 400 for a query', async () => {
     start([], NOW, PRICES_ON);
-    history(earlier);
+    history();
     const movers = await get(api('all', 'bank/price-movers'), priceMoversResponseSchema);
     expect(movers.periods.map((period) => [period.period, period.change, period.items])).toEqual([
       ['24h', 0, []],
@@ -804,14 +782,14 @@ describe('current GE prices', () => {
     await getError(`${api('all', 'bank/price-movers')}?period=7d`, 400);
   });
 
-  it('keeps the history through a rebuild, with the same answer after', async () => {
+  it('keeps the stored hours and days through a rebuild, with the same answer after', async () => {
     start(events(), NOW, PRICES_ON);
-    history(earlier);
-    const db = run!.database.db; // eslint-disable-line @typescript-eslint/no-non-null-assertion -- set by start()
-    const rows = db.select().from(itemPriceHistory).all();
+    history();
+    const rows = () => [db().select().from(priceHours).all(), db().select().from(priceDays).all()];
+    const stored = rows();
     const before = await get(api('all', 'bank/price-movers'), priceMoversResponseSchema);
-    expect(rebuildDerivedTables(db, { now: () => TEST_NOW }).failed).toEqual([]);
-    expect(db.select().from(itemPriceHistory).all()).toEqual(rows);
+    expect(rebuildDerivedTables(db(), { now: () => TEST_NOW }).failed).toEqual([]);
+    expect(rows()).toEqual(stored);
     expect(await get(api('all', 'bank/price-movers'), priceMoversResponseSchema)).toEqual(before);
   });
 });
