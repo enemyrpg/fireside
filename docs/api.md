@@ -194,9 +194,15 @@ replaced through the API anyway
   type, a new optional field, a new endpoint, a new status on an existing
   route. Objects are strict, so a server only accepts fields from its own
   version or older; update the server before the plugin.
-- **Breaking changes** (removing or renaming a field, changing its meaning or
-  type) need a new major version and a new `/api/v2` or event `schemaVersion`.
-  This applies to the dashboard's own endpoints too.
+- **Patch version:** a field keeps its shape, but its documented meaning
+  changes (first in 1.42.1: `baselineAt` in `…/bank/price-movers`). The
+  schemas accept the same payloads; the version tells a client which meaning
+  it gets. A patch is tagged and released like any other version.
+- **Breaking changes** (removing or renaming a field, changing its type) need
+  a new major version and a new `/api/v2` or event `schemaVersion`. This
+  applies to the dashboard's own endpoints too.
+- The rules and the reasons are in
+  [ADR 0007](decisions/0007-contract-package.md).
 - A change to events or the API updates the Zod schemas, the fixtures,
   `CONTRACT_VERSION` and these docs in the same pull request
   ([the contract rule](../CONTRIBUTING.md#the-contract-rule)).

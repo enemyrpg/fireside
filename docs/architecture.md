@@ -511,9 +511,11 @@ and the plugin's endpoints, and with them the rest of the API
   strict: an unknown field is rejected, so a new field needs a new contract
   version, and the server is updated before the plugin.
 - **Version:** `CONTRACT_VERSION` in `shared/src/contract.ts` (semver). An
-  addition (a new event type, field or endpoint) is a minor version; a breaking
-  change needs a major version and a new `/api/v2` or event `schemaVersion`.
-  The server reports the version in `GET /health` and `GET /ingest/verify`.
+  addition (a new event type, field or endpoint) is a minor version; a field
+  that keeps its shape but changes its documented meaning is a patch version;
+  a breaking change needs a major version and a new `/api/v2` or event
+  `schemaVersion`. The server reports the version in `GET /health` and
+  `GET /ingest/verify`.
 - **Fixtures:** `shared/fixtures/` has valid and invalid examples for every
   event and API schema. `invalid-semantic` fixtures are valid JSON Schema but
   rejected by the server (rules JSON Schema can't express). The shared tests

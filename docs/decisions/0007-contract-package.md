@@ -22,8 +22,19 @@ import Zod.
 - The plugin pins a version with `scripts/update-contract.sh <version>` into
   `src/test/resources/contract/` and validates what it sends against it in its
   tests.
-- `CONTRACT_VERSION` is semver: additions are minor, breaking changes need a
-  major version and a new API path or event `schemaVersion`.
+- `CONTRACT_VERSION` is semver:
+  - **Major:** a breaking change. It also needs a new API path or event
+    `schemaVersion`.
+  - **Minor:** an addition (a new event type, field or endpoint).
+  - **Patch:** an event or API field keeps its shape, but its documented
+    meaning changes. The schemas accept exactly the same payloads, but a
+    client that reads the field must know which meaning it gets. The first
+    was 1.42.1, when `baselineAt` in the bank price movers became the end of
+    the window of trades compared against instead of the time those prices
+    were fetched.
+- Every version, a patch too, is tagged and released the same way, so the
+  plugin can pin it and the server's reported version always names a
+  published package.
 
 ## Consequences
 

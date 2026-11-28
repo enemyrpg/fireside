@@ -1,11 +1,9 @@
 /**
  * Version of the contract between plugin and server (events and API).
  *
- * Semver: bump the minor version for additions (new event types, new fields),
- * the major version for breaking changes, and the patch version when only
- * the documented meaning of an existing field changes. Payloads are strict, so a new field
- * is only accepted by servers on the new version. The server reports this
- * version in `GET /ingest/verify`, and the contract package is tagged with it.
+ * Semver (major, minor and patch rules in docs/decisions/0007-contract-package.md).
+ * The server reports it in `GET /health` and `GET /ingest/verify`, and the
+ * contract package is tagged with it.
  */
 export const CONTRACT_VERSION = '1.42.1';
 
