@@ -46,8 +46,10 @@ const TBOW_ID = 20997;
 const SHARED_TABLES = [
   'item_icons',
   'named_icons',
-  'item_prices',
-  'item_price_history',
+  'price_hours',
+  'price_hour_fetches',
+  'price_days',
+  'price_day_hours',
   'external_sources',
   'server_settings',
   // The rules version of each projection: one row per projection, for the instance.

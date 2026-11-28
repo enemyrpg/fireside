@@ -6,7 +6,7 @@
   "periods": [
     {
       "period": "24h",
-      "baselineAt": "2026-11-20T12:00:03.000Z",
+      "baselineAt": "2026-11-20T12:00:00.000Z",
       "change": 8980,
       "items": [
         {

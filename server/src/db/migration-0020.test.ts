@@ -99,8 +99,15 @@ describe('migration 0020 (users and ownership)', () => {
         )
         .pluck()
         .all(MIGRATIONS_TABLE) as string[];
+      // Tables a later migration dropped (the `/latest` prices, 0028) are left empty.
+      const inToday = new Set(
+        old
+          .prepare("SELECT name FROM today.sqlite_master WHERE type = 'table'")
+          .pluck()
+          .all() as string[],
+      );
       old.transaction(() => {
-        for (const table of tables) {
+        for (const table of tables.filter((name) => inToday.has(name))) {
           const columns = (old.pragma(`main.table_info("${table}")`) as { name: string }[])
             .map((column) => `"${column.name}"`)
             .join(', ');

@@ -192,8 +192,8 @@ Afterwards the current rules version of every projection is stored in
 `projection_versions`.
 
 Account IDs are kept. Tables that are not derived are never touched: users,
-sessions and devices, API keys, invites, audit log, settings, icons, prices
-and price history, `external_snapshots`, `clog_reads` and the collection log
+sessions and devices, API keys, invites, audit log, settings, icons, the
+hourly and daily price sums, `external_snapshots`, `clog_reads` and the collection log
 source. The one exception is the user's raid split choices: a rebuild (and a
 retry that projected an event) removes those whose drop is definitely gone,
 by the rules in [Raid split choices](#raid-split-choices). It never moves or
@@ -355,30 +355,52 @@ The server makes no network calls unless the owner turns a source on
 
 The sources today:
 
-- **OSRS Wiki Prices** (`PRICES_ENABLED`): latest GE prices, used only for
-  what exists now (the latest bank, potion storage, net worth). Everything
-  that already happened keeps the price from when it happened; prices never
-  change raw or derived data. Each fetch is also kept in `item_price_history`
-  for Price movers. Prices are fetched only when they are needed
-  (`server/src/jobs/prices.ts`,
-  [ADR 0019](decisions/0019-prices-fetched-on-demand.md)):
-  - when bank data is read (bank, summary, price movers, potion storage) or a
-    session of any account is open, if the last attempt is at least an hour
-    old. A read never waits: it answers with the stored prices
-    (`prices.fetchedAt` says how old they are), and the fetch runs in the
-    background. When those prices are over an hour old, the dashboard asks the
-    account's bank, summary, price movers and potion storage again once, a few
-    seconds later, so they all show the new prices;
-  - and whenever the last attempt is 3 h 55 min old (an hour after a failed
-    one), for the price history.
-    With less than 4 hours between two fetches, a fetch is always within the
-    2 hours the 24 h period allows. 7 and 30 days compare with the first
-    fetch of each UTC day, and allow 26 hours before the target, because two
-    of those can be up to about 28 hours apart.
+- **OSRS Wiki Prices** (`PRICES_ENABLED`): Grand Exchange trades per hour,
+  used only for what exists now (the latest bank, potion storage, net worth).
+  Everything that already happened keeps the price from when it happened;
+  prices never change raw or derived data
+  ([ADR 0021](decisions/0021-prices-from-hourly-volume-weighted-averages.md)).
+  - **Source:** `/api/v2/osrs/1h?timestamp=<hour start>` without `id`: every
+    item's average price and volume on each side (insta-buy, insta-sell) in
+    one hour. Each hour is asked for once, 10 minutes after it ends
+    (`server/src/prices/fetch.ts`). `price_hours` keeps the 48 hours up to
+    the newest stored one, `price_days` the same sums per UTC day for 35 days
+    (`price_day_hours` counts each day's hours). Counted back from the newest
+    stored hour, never from the clock.
+  - **Price rule** (`server/src/prices/rule.ts`): the volume-weighted average
+    of all trades in a window, both sides. A side without trades is not used.
+    When one side's average is more than 2× the other's, only the side with
+    more trades counts, so one odd trade or a stale side does not move it.
+  - **Current price** (`server/src/prices/history.ts`): the 24 hours up to the
+    newest stored hour; without trades then, the last 7 UTC days, then the
+    item's newest day with trades, then the snapshot price. Bank, summary,
+    potion storage and Price movers use the same price, so the movers' sum
+    explains the change in net worth. Values can differ slightly from
+    RuneLite's own GE value, which is the midpoint of the latest insta-buy
+    and insta-sell (`/latest`).
+  - **Price movers:** 24 h compares with the 24 hours before the current
+    window; 7 d and 30 d with the UTC day whose middle is nearest to the
+    window's middle that long before (the label ± 12 hours). A period shows
+    only when both windows have all their hours, and an item only when it
+    traded in both. `baselineAt` is the end of the window compared with.
+  - **When** (`server/src/jobs/prices.ts`): a catch-up fetches every missing
+    settled hour of the last 48, oldest first, at most 48, one request at a
+    time with the source's 10 s spacing. It starts when an hour is missing
+    and bank data is read (bank, summary, price movers, potion storage) or a
+    session of any account is open, and when the newest stored hour is 24
+    hours behind, so every UTC day gets all its hours. A read never waits: it
+    answers with the stored prices (`prices.fetchedAt` says when they were
+    last fetched), and the catch-up runs in the background. When those prices
+    are over an hour old, the dashboard asks the account's bank, summary,
+    price movers and potion storage again once, a few seconds later, so they
+    all show the new prices.
 
-  Never more than one fetch at a time and never more than once an hour, failed
-  attempts included. The last attempt is stored, so a restart makes no extra
-  call. That is about 6 calls a day on an idle server, and at most 24.
+  Never more than one catch-up at a time, and nothing within an hour of a
+  failed request. Stored hours are never fetched again, so a restart makes no
+  extra call. That is about 24 calls a day (about 278 KB each), with use or
+  without: one per hour while in use, one batch of about 24 a day when idle.
+  The first start, or a start after the server was off, makes up to 48 in one
+  catch-up (about 8 minutes).
 
 - **RuneProfile** (`RUNEPROFILE_ENABLED`): the collection log, per account,
   only for accounts the owner turned it on for. Responses are stored exactly as

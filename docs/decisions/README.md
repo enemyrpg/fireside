@@ -26,6 +26,7 @@ is. [architecture.md](../architecture.md) describes how it works.
 | [0018](0018-icons-cached-privately-for-a-day.md)             | Icons may be cached privately for a day         | 2026-11-25 |
 | [0019](0019-prices-fetched-on-demand.md)                     | Wiki prices fetched only when needed            | 2026-11-26 |
 | [0020](0020-raid-split-choice-keys.md)                       | Raid split choices keep their drop              | 2026-11-26 |
+| [0021](0021-prices-from-hourly-volume-weighted-averages.md)  | Prices from hourly volume-weighted averages     | 2026-11-28 |
 
 ## Adding a decision
 

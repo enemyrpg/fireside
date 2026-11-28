@@ -1,7 +1,9 @@
 # 0019. Wiki prices fetched only when needed
 
 - **Date:** 2026-11-26
-- **Status:** Accepted
+- **Status:** Accepted. The price rule, the price history and the 3 h 55 min
+  fetch are replaced by [ADR 0021](0021-prices-from-hourly-volume-weighted-averages.md);
+  fetching on reads and while a session is open still holds.
 
 ## Context
 

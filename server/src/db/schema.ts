@@ -766,47 +766,66 @@ export const serverSettings = sqliteTable('server_settings', {
 });
 
 /**
- * Latest Grand Exchange prices from the OSRS Wiki, by item ID as the wiki
- * gives it (un-noted items only). A row is kept until a newer fetch has the
- * item again, so a failed or partial fetch never removes a price.
+ * Grand Exchange trades per item and hour, from the OSRS Wiki's `/1h` buckets
+ * (prices/fetch.ts): the value and number of insta-buys (`high`) and
+ * insta-sells (`low`). The value is the bucket's average price times its
+ * volume, rounded to whole gp, so windows of any length are sums. An item
+ * without a row in a stored hour had no trades then. The 48 hours up to the
+ * newest stored one are kept (pruned when a bucket is stored, never on read).
+ * Not derived from events and not raw data: `rebuild` never touches it, and
+ * hours older than the catch-up are not fetched again. No personal data.
  */
-export const itemPrices = sqliteTable('item_prices', {
-  itemId: integer('item_id').primaryKey(),
-  /** Latest instant-buy price and when it happened. `null` if never seen. */
-  high: integer('high'),
-  highTime: text('high_time'),
-  /** Latest instant-sell price and when it happened. `null` if never seen. */
-  low: integer('low'),
-  lowTime: text('low_time'),
-  /** When the server fetched this row. */
+export const priceHours = sqliteTable(
+  'price_hours',
+  {
+    /** Start of the hour, as the wiki's `timestamp` gives it. */
+    hourStart: text('hour_start').notNull(),
+    itemId: integer('item_id').notNull(),
+    highValue: integer('high_value').notNull(),
+    highVolume: integer('high_volume').notNull(),
+    lowValue: integer('low_value').notNull(),
+    lowVolume: integer('low_volume').notNull(),
+  },
+  // Hour first: a window is a range of hours.
+  (table) => [primaryKey({ columns: [table.hourStart, table.itemId] })],
+);
+
+/**
+ * Which `/1h` buckets are stored, with the same retention as `price_hours`. An
+ * hour without a row here is missing (never fetched), not an hour without
+ * trades. Each bucket is fetched and stored once.
+ */
+export const priceHourFetches = sqliteTable('price_hour_fetches', {
+  hourStart: text('hour_start').primaryKey(),
+  /** When the server stored it. */
   fetchedAt: text('fetched_at').notNull(),
+  /** Items in the bucket. */
+  items: integer('items').notNull(),
 });
 
 /**
- * Earlier Grand Exchange prices, for Price movers: one row per item per stored
- * fetch, written with `item_prices` from the same response. The newest 48
- * fetches are kept, and the newest 35 first-fetches-of-a-UTC-day
- * (prices/history.ts prunes by count when a fetch is stored, never on read and
- * never by the clock). "Newest" is by `seq`, the order the fetches were stored
- * in, not by `fetched_at`: a clock that was ahead for a while must not make its
- * fetches outrank the real ones that follow. Not derived from events and not
- * raw data: `rebuild` never touches it, and it cannot be fetched again. No
- * personal data.
+ * The same sums per UTC day (`YYYY-MM-DD`), added up when each hour is stored,
+ * so 7 d and 30 d need no hourly rows. The 35 days up to the newest stored one
+ * are kept. Like `price_hours`: not derived from events, never rebuilt.
  */
-export const itemPriceHistory = sqliteTable(
-  'item_price_history',
+export const priceDays = sqliteTable(
+  'price_days',
   {
-    /** When the server fetched the prices: the same for every item of a fetch. */
-    fetchedAt: text('fetched_at').notNull(),
+    day: text('day').notNull(),
     itemId: integer('item_id').notNull(),
-    high: integer('high'),
-    low: integer('low'),
-    /** Which stored fetch this was, counting up from 1: the same for every item of a fetch. */
-    seq: integer('seq').notNull(),
+    highValue: integer('high_value').notNull(),
+    highVolume: integer('high_volume').notNull(),
+    lowValue: integer('low_value').notNull(),
+    lowVolume: integer('low_volume').notNull(),
   },
-  // Time first: rows are appended in order and a baseline is one fetch.
-  (table) => [primaryKey({ columns: [table.fetchedAt, table.itemId] })],
+  (table) => [primaryKey({ columns: [table.day, table.itemId] })],
 );
+
+/** How many hours of each UTC day are in `price_days`: a day is complete at 24. */
+export const priceDayHours = sqliteTable('price_day_hours', {
+  day: text('day').primaryKey(),
+  hours: integer('hours').notNull(),
+});
 
 // --- Bank and potion storage --------------------------- Every snapshot keeps
 // a row with its totals (for history). Items are stored only for each account's
